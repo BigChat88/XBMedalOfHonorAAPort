@@ -32,11 +32,13 @@ jobs:
 
       # In a step of its own instead of "container:", because the build needs to write
       # as the runner's user, and nxdk's image has what it needs and nothing more.
-      # Pin it to a digest once a version has been tested on hardware.
+      # The image is pinned, here and in scripts/nxdk.*: nxdk's "latest" changes the
+      # compiler, and later ones (clang 22, 2026-11) don't even have the python3 the build
+      # needs. Move to a new one only after trying the game with it.
       - name: Build the game
         run: |
           docker run --rm -v "$PWD:/work" -w /work/xbox/mohaa -e NXDK_DIR=/usr/src/nxdk \
-            ghcr.io/xboxdev/nxdk:latest sh -c 'make -j"$(nproc)" xbe && chmod -R a+rwX bin build'
+            ghcr.io/xboxdev/nxdk@sha256:51f66edc0c9b73238c8cbf9269086eae695b81c0270009017efb9487e1fa4c33 sh -c 'make -j"$(nproc)" xbe && chmod -R a+rwX bin build'
           ls -l xbox/mohaa/bin/default.xbe
 
       - name: Stage the bundle
