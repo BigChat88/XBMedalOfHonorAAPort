@@ -1,0 +1,92 @@
+name: release
+
+# Every pull request builds the game (default.xbe) as a check. A push to main (a
+# direct commit or a merged pull request) also publishes a GitHub Release named after
+# VERSION. Its main asset is a self-contained "everything you need" bundle: add your
+# own copy of the game, run build.cmd / build.sh, and you get the disc image and the
+# folder, with no Docker or Xbox toolchain. A second asset holds the link map, to read
+# crash addresses from a console.
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Version
+        id: ver
+        run: |
+          VER="$(tr -d ' \r\n' < VERSION)"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VER"    >> "$GITHUB_OUTPUT"
+
+      # In a step of its own instead of "container:", because the build needs to write
+      # as the runner's user, and nxdk's image has what it needs and nothing more.
+      # Pin it to a digest once a version has been tested on hardware.
+      - name: Build the game
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work/xbox/mohaa -e NXDK_DIR=/usr/src/nxdk \
+            ghcr.io/xboxdev/nxdk:latest sh -c 'make -j"$(nproc)" xbe && chmod -R a+rwX bin build'
+          ls -l xbox/mohaa/bin/default.xbe
+
+      - name: Stage the bundle
+        id: stage
+        run: |
+          set -eu
+          NAME="OGXMOHAA-${{ steps.ver.outputs.version }}"
+          DEST="stage/$NAME"
+          mkdir -p "$DEST/engine" "$DEST/tools" "$DEST/gamedata" "$DEST/output"
+          cp build.cmd build.sh VERSION README.md LICENSE requirements.txt "$DEST/"
+          cp tools/*.py "$DEST/tools/"
+          cp gamedata/README.md "$DEST/gamedata/"
+          cp output/README.md "$DEST/output/"
+          cp xbox/mohaa/bin/default.xbe "$DEST/engine/"
+          cp xbox/mohaa/data/autoexec.cfg xbox/mohaa/data/xbox_default.cfg "$DEST/engine/"
+          {
+            echo "OGXMOHAA ${{ steps.ver.outputs.version }}"
+            echo "commit:  ${GITHUB_SHA}"
+            echo "source:  ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/${GITHUB_SHA}"
+            echo "ref:     ${GITHUB_REF}"
+            echo "run:     ${GITHUB_RUN_NUMBER}"
+            echo "built:   $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > "$DEST/BUILD_INFO.txt"
+          ( cd stage && zip -qr "../$NAME.zip" "$NAME" )
+          # the link map of the same build
+          mkdir -p "stage/$NAME-debug"
+          cp xbox/mohaa/build/main.map "$DEST/BUILD_INFO.txt" "stage/$NAME-debug/"
+          ( cd stage && zip -qr "../$NAME-debug.zip" "$NAME-debug" )
+          ls -l "$NAME.zip" "$NAME-debug.zip"
+          echo "asset=$NAME.zip"        >> "$GITHUB_OUTPUT"
+          echo "debug=$NAME-debug.zip"  >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OGXMOHAA-${{ steps.ver.outputs.version }}-run${{ github.run_number }}
+          path: |
+            ${{ steps.stage.outputs.asset }}
+            ${{ steps.stage.outputs.debug }}
+          retention-days: 14
+
+      - name: Publish release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: OGXMOHAA ${{ steps.ver.outputs.version }}
+          prerelease: true
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          files: |
+            ${{ steps.stage.outputs.asset }}
+            ${{ steps.stage.outputs.debug }}

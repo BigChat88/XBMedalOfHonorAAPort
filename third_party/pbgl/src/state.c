@@ -1,0 +1,903 @@
+#include <string.h>
+#include <pbkit/pbkit.h>
+
+#include "GL/gl.h"
+#include "GL/glext.h"
+#include "types.h"
+#include "matrix.h"
+#include "texture.h"
+#include "array.h"
+#include "error.h"
+#include "light.h"
+#include "texenv.h"
+#include "texgen.h"
+#include "push.h"
+#include "misc.h"
+#include "state.h"
+#include "trace.h"
+
+#define NV_TEX_DISABLE   PBGL_MASK(NV097_SET_TEXTURE_CONTROL0_ENABLE, 0)
+#define NV_TEX_ENABLE    PBGL_MASK(NV097_SET_TEXTURE_CONTROL0_ENABLE, 1)
+#define NV_TEX_ALPHAKILL PBGL_MASK(NV097_SET_TEXTURE_CONTROL0_ALPHA_KILL_ENABLE, 1)
+
+#define FLAG_DIRTY_IF_CHANGED(state, flag, value) \
+  if (pbgl.flags.flag != value) \
+    pbgl.state_dirty = pbgl.state.dirty = GL_TRUE
+
+gl_state_t pbgl;
+
+void pbgl_state_init(void) {
+  memset(&pbgl, 0, sizeof(pbgl));
+
+  /* set default state */
+
+  pbgl.fb_width = pb_back_buffer_width();
+  pbgl.fb_height = pb_back_buffer_height();
+
+  pbgl.flags.dither = GL_TRUE;
+  pbgl.error = GL_NO_ERROR;
+
+  // nv2a compare func index = GL func index
+  pbgl.alpha.func = GL_ALWAYS;
+  pbgl.alpha.dirty = GL_TRUE;
+
+  // src and dst blend factors are equal between nv2a and GL
+  pbgl.blend.src = GL_ONE;
+  pbgl.blend.dst = GL_ZERO;
+  pbgl.blend.eqn = GL_FUNC_ADD; // same goes for the equation indices
+  pbgl.blend.color = 0x00000000;
+  pbgl.blend.dirty = GL_TRUE;
+
+  pbgl.depth.func = GL_LESS;
+  pbgl.depth.writemask = GL_TRUE;
+  pbgl.depth.dirty = GL_TRUE;
+
+  pbgl.stencil.func = GL_ALWAYS;
+  pbgl.stencil.op_sfail = GL_KEEP; // and for stencil ops
+  pbgl.stencil.op_zfail = GL_KEEP;
+  pbgl.stencil.op_zpass = GL_KEEP;
+  pbgl.stencil.funcmask = 0xFFFFFFFFu;
+  pbgl.stencil.writemask = 0xFFFFFFFFu;
+  pbgl.stencil.dirty = GL_TRUE;
+
+  pbgl.cullface.frontface = GL_CCW; // and for front face
+  pbgl.cullface.cullface = GL_BACK; // and for cull face
+  pbgl.cullface.dirty = GL_TRUE;
+
+  pbgl.polyofs.dirty = GL_TRUE;
+
+  pbgl.colormask.value = 
+      NV097_SET_COLOR_MASK_RED_WRITE_ENABLE
+    | NV097_SET_COLOR_MASK_GREEN_WRITE_ENABLE
+    | NV097_SET_COLOR_MASK_BLUE_WRITE_ENABLE
+    | NV097_SET_COLOR_MASK_ALPHA_WRITE_ENABLE;
+  pbgl.colormask.dirty = GL_TRUE;
+
+  for (int i = 1; i < LIGHT_COUNT; ++i) {
+    pbgl.light[i].ambient = (vec4f){{ 0.f, 0.f, 0.f, 1.f }};
+    pbgl.light[i].diffuse = (vec4f){{ 0.f, 0.f, 0.f, 1.f }};
+    pbgl.light[i].specular = (vec4f){{ 0.f, 0.f, 0.f, 1.f }};
+    pbgl.light[i].pos = (vec4f){{ 0.f, 0.f, 1.f, 0.f }};
+    pbgl.light[i].factor[0] = 1.f; // GL_CONSTANT_ATTENUATION
+    pbgl.light[i].dirty = GL_TRUE;
+  }
+  // light #0 has a different initial state for some reason
+  pbgl.light[0].ambient = (vec4f){{ 1.f, 1.f, 1.f, 1.f }};
+  pbgl.light[0].diffuse = (vec4f){{ 1.f, 1.f, 1.f, 1.f }};
+  pbgl.light[0].specular = (vec4f){{ 1.f, 1.f, 1.f, 1.f }};
+  pbgl.light[0].pos = (vec4f){{ 0.f, 0.f, 1.f, 0.f }};
+  pbgl.light[0].factor[0] = 1.f; // GL_CONSTANT_ATTENUATION
+  pbgl.light[0].dirty = GL_TRUE;
+  pbgl.light_any_dirty = GL_TRUE;
+
+  pbgl.lightmodel.ambient = (vec4f){{ 0.2f, 0.2f, 0.2f, 1.0f }};
+  pbgl.lightmodel.dirty = GL_TRUE;
+
+  pbgl.fog = (fog_state_t) {
+    .mode = GL_EXP,
+    .start = 0.f,
+    .end = 1.f,
+    .density = 1.f,
+  };
+  pbgl.fog.dirty = GL_TRUE;
+
+  pbgl.varray[VARR_COLOR1].value   = (vec4f) {{ 1.f, 1.f, 1.f, 1.f }};
+  pbgl.varray[VARR_NORMAL].value   = (vec4f) {{ 0.f, 0.f, 1.f, 0.f }};
+  for (int i = 0; i < VARR_COUNT; ++i)
+    pbgl.varray[i].dirty = GL_TRUE;
+
+  for (int i = 0; i < TEXUNIT_COUNT; ++i) {
+    pbgl.tex[i].dirty = GL_TRUE;
+    pbgl.tex[i].varray.value = (vec4f) {{ 0.f, 0.f, 1.f, 1.f }};
+    pbgl.tex[i].varray.dirty = GL_TRUE;
+    pbgl.texenv[i] = (texenv_state_t) {
+      .mode        = GL_MODULATE,
+      .combine_rgb = GL_MODULATE,
+      .combine_a   = GL_MODULATE,
+      .src_rgb     = { GL_TEXTURE, GL_PREVIOUS, GL_CONSTANT },
+      .src_a       = { GL_TEXTURE, GL_PREVIOUS, GL_CONSTANT },
+      .operand_rgb = { GL_SRC_COLOR, GL_SRC_COLOR, GL_SRC_ALPHA },
+      .operand_a   = { GL_SRC_ALPHA, GL_SRC_ALPHA, GL_SRC_ALPHA },
+      .color       = 0x00000000,
+      .shift_rgb   = NV097_SET_COMBINER_COLOR_OCW_OP_NOSHIFT,
+      .shift_a     = NV097_SET_COMBINER_ALPHA_OCW_OP_NOSHIFT,
+      .color_dirty = GL_TRUE,
+    };
+    pbgl.texgen[i].coord[0] = (texgen_coord_state_t) {
+      .mode = GL_EYE_LINEAR,
+      .obj_plane = (vec4f) {{ 1.f, 0.f, 0.f, 0.f }},
+      .eye_plane = (vec4f) {{ 1.f, 0.f, 0.f, 0.f }},
+    };
+    pbgl.texgen[i].coord[1] = (texgen_coord_state_t) {
+      .mode = GL_EYE_LINEAR,
+      .obj_plane = (vec4f) {{ 0.f, 1.f, 0.f, 0.f }},
+      .eye_plane = (vec4f) {{ 0.f, 1.f, 0.f, 0.f }},
+    };
+    pbgl.texgen[i].coord[2] = (texgen_coord_state_t) { .mode = GL_EYE_LINEAR };
+    pbgl.texgen[i].coord[3] = (texgen_coord_state_t) { .mode = GL_EYE_LINEAR };
+    pbgl.texgen[i].dirty = GL_TRUE;
+  }
+  pbgl.tex_any_dirty = GL_TRUE;
+  pbgl.texenv_dirty = GL_TRUE;
+  pbgl.texgen_dirty = GL_TRUE;
+
+  for (int i = 0; i < MTX_COUNT; ++i)
+    pbgl_mtx_reset(i);
+  pbgl.mtx_any_dirty = GL_TRUE;
+  pbgl.mtx_current = MTX_MODELVIEW;
+
+  pbgl.view.x = 0;
+  pbgl.view.y = 0;
+  pbgl.view.w = pbgl.fb_width;
+  pbgl.view.h = pbgl.fb_height;
+  pbgl.view.znear = 0.f; // this is multiplied by appropriate Z scales below
+  pbgl.view.zfar = 1.f;
+  pbgl.view.dirty = GL_TRUE;
+
+  pbgl.material[0].dirty = GL_TRUE;
+  pbgl.material[1].dirty = GL_TRUE;
+
+  pbgl.scissor.dirty = GL_TRUE;
+  pbgl.scissor.x = 0;
+  pbgl.scissor.y = 0;
+  pbgl.scissor.w = pbgl.fb_width;
+  pbgl.scissor.h = pbgl.fb_height;
+
+  pbgl.polymode.dirty = GL_TRUE;
+  pbgl.polymode.front_mode = NV097_SET_FRONT_POLYGON_MODE_V_FILL;
+  pbgl.polymode.back_mode = NV097_SET_FRONT_POLYGON_MODE_V_FILL;
+
+  pbgl.line.dirty = GL_TRUE;
+
+  pbgl.clear_zstencil = 0xFFFFFF00; // TODO: this assumes 24-bit z + 8-bit stencil
+
+  pbgl.pack_align = 4;
+  pbgl.unpack_align = 4; // TODO: implement this
+
+  pbgl.state_dirty = GL_TRUE;
+
+  pbgl.active = GL_TRUE; // this can only be used when we're live
+}
+
+static inline GLuint *flush_texunit(GLuint *p, GLuint i) {
+  texunit_state_t *tu = pbgl.tex + i;
+
+  if (tu->dirty) {
+    GLuint enable;
+
+    // TODO: properly handle texture_1d, texture_3d, texture_cube
+    const GLboolean tex_enabled = tu->flags.texture_1d || tu->flags.texture_2d;
+    if (tu->enabled && tex_enabled) {
+      enable = NV_TEX_ENABLE;
+      if (pbgl.flags.alpha_test)
+        enable |= NV_TEX_ALPHAKILL;
+    } else {
+      enable = NV_TEX_DISABLE;
+    }
+    PBGL_TRACE("  flush_texunit %u: enabled %d flags 0x%x tex %p -> %s\n", i, tu->enabled, tu->flags.word, tu->tex,
+               enable == NV_TEX_DISABLE ? "off" : "on");
+
+    const GLuint tidx = i * 64;
+    if (tu->tex && enable != NV_TEX_DISABLE) {
+      // note: we only operate on swizzled textures
+      const GLuint texmat = MTX_TEXTURE0 + i;
+      p = push_command_parameter(p, NV097_SET_TEXTURE_OFFSET + tidx, tu->tex->nv.addr);
+      p = push_command_parameter(p, NV097_SET_TEXTURE_FORMAT + tidx, tu->tex->nv.format);
+      p = push_command_parameter(p, NV097_SET_TEXTURE_PALETTE + tidx, tu->tex->nv.palette);
+      p = push_command_parameter(p, NV097_SET_TEXTURE_ADDRESS + tidx, tu->tex->nv.wrap);
+      p = push_command_parameter(p, NV097_SET_TEXTURE_CONTROL0 + tidx, enable |
+        PBGL_MASK(NV097_SET_TEXTURE_CONTROL0_MIN_LOD_CLAMP, 0) |
+        PBGL_MASK(NV097_SET_TEXTURE_CONTROL0_MAX_LOD_CLAMP, 4095));
+      p = push_command_parameter(p, NV097_SET_TEXTURE_FILTER + tidx, tu->tex->nv.filter);
+      p = push_command_boolean(p, NV097_SET_TEXTURE_MATRIX_ENABLE + i * 4, !pbgl.mtx[texmat].identity);
+    } else {
+      p = push_command_parameter(p, NV097_SET_TEXTURE_CONTROL0 + tidx, NV_TEX_DISABLE);
+      p = push_command_parameter(p, NV097_SET_TEXTURE_PALETTE + tidx, 0);
+      p = push_command_boolean(p, NV097_SET_TEXTURE_MATRIX_ENABLE + i * 4, GL_FALSE);
+    }
+
+    tu->dirty = GL_FALSE;
+  }
+
+  return p;
+}
+
+// OGX MOHAA: the scissor box clamped to the framebuffer; GL_FALSE when it is
+// empty. The real NV2A rejects a window clip whose min is above its max
+// ("invalid data" GPU error and the system halts); xemu takes it as no clip,
+// and the game does set an empty box (y 0, height 0) around the cinematics
+// and menus while it draws them, so an empty box clips nothing.
+static GLboolean scissor_rect(GLint *xmin, GLint *xmax, GLint *ymin, GLint *ymax) {
+  *xmin = imax(pbgl.scissor.x, 0);
+  *xmax = imin(pbgl.scissor.x + pbgl.scissor.w - 1, pbgl.fb_width - 1);
+  *ymax = imin(pbgl.fb_height - pbgl.scissor.y - 1, pbgl.fb_height - 1);
+  *ymin = imax(pbgl.fb_height - pbgl.scissor.y - pbgl.scissor.h, 0);
+  return *xmin <= *xmax && *ymin <= *ymax;
+}
+
+GLboolean pbgl_state_flush(void) {
+  if (!pbgl.state_dirty) return GL_FALSE;
+
+  GLuint *p = pb_begin();
+
+  if (pbgl.scissor.dirty) {
+      if (pbgl.flags.scissor_test) {
+      GLint xmin, xmax, ymin, ymax;
+      if (!scissor_rect(&xmin, &xmax, &ymin, &ymax)) {
+        // empty: the whole framebuffer (see scissor_rect)
+        xmin = ymin = 0;
+        xmax = pbgl.fb_width - 1;
+        ymax = pbgl.fb_height - 1;
+      }
+      p = push_command_parameter(p, NV097_SET_WINDOW_CLIP_HORIZONTAL, xmin | (xmax << 16));
+      p = push_command_parameter(p, NV097_SET_WINDOW_CLIP_VERTICAL, ymin | (ymax << 16));
+    } else {
+      p = push_command_parameter(p, NV097_SET_WINDOW_CLIP_HORIZONTAL, 0 | ((pbgl.fb_width - 1) << 16));
+      p = push_command_parameter(p, NV097_SET_WINDOW_CLIP_VERTICAL, 0 | ((pbgl.fb_height - 1) << 16));
+    }
+    pbgl.scissor.dirty = GL_FALSE;
+  }
+
+  if (pbgl.line.dirty) {
+    p = push_command_boolean(p, NV20_TCL_PRIMITIVE_3D_LINE_SMOOTH_ENABLE, pbgl.flags.line_smooth);
+    pbgl.line.dirty = GL_FALSE;
+  }
+
+  if (pbgl.alpha.dirty) {
+    // alpha kill might have changed
+    for (int i = 0; i < TEXUNIT_COUNT; ++i)
+      if (pbgl.tex[i].enabled)
+        pbgl.tex[i].dirty = GL_TRUE;
+    pbgl.tex_any_dirty = GL_TRUE;
+    p = push_command_boolean(p, NV097_SET_ALPHA_TEST_ENABLE, pbgl.flags.alpha_test);
+    p = push_command_parameter(p, NV097_SET_ALPHA_FUNC, pbgl.alpha.func);
+    p = push_command_parameter(p, NV097_SET_ALPHA_REF, pbgl.alpha.ref);
+    pbgl.alpha.dirty = GL_FALSE;
+  }
+
+  if (pbgl.blend.dirty) {
+    p = push_command_boolean(p, NV097_SET_BLEND_ENABLE, pbgl.flags.blend);
+    p = push_command_parameter(p, NV097_SET_BLEND_FUNC_SFACTOR, pbgl.blend.src);
+    p = push_command_parameter(p, NV097_SET_BLEND_FUNC_DFACTOR, pbgl.blend.dst);
+    p = push_command_parameter(p, NV097_SET_BLEND_EQUATION, pbgl.blend.eqn);
+    p = push_command_parameter(p, NV097_SET_BLEND_COLOR, pbgl.blend.color);
+    pbgl.blend.dirty = GL_FALSE;
+  }
+
+  if (pbgl.depth.dirty) {
+    p = push_command_boolean(p, NV097_SET_DEPTH_TEST_ENABLE, pbgl.flags.depth_test);
+    p = push_command_boolean(p, NV097_SET_DEPTH_MASK, pbgl.depth.writemask);
+    p = push_command_parameter(p, NV097_SET_DEPTH_FUNC, pbgl.depth.func);
+    pbgl.depth.dirty = GL_FALSE;
+  }
+
+  if (pbgl.stencil.dirty) {
+    p = push_command_boolean(p, NV097_SET_STENCIL_TEST_ENABLE, pbgl.flags.stencil_test);
+    p = push_command_parameter(p, NV097_SET_STENCIL_OP_FAIL, pbgl.stencil.op_sfail);
+    p = push_command_parameter(p, NV097_SET_STENCIL_OP_ZFAIL, pbgl.stencil.op_zfail);
+    p = push_command_parameter(p, NV097_SET_STENCIL_OP_ZPASS, pbgl.stencil.op_zpass);
+    p = push_command_parameter(p, NV097_SET_STENCIL_FUNC, pbgl.stencil.func);
+    p = push_command_parameter(p, NV097_SET_STENCIL_FUNC_MASK, pbgl.stencil.funcmask);
+    p = push_command_parameter(p, NV097_SET_STENCIL_MASK, pbgl.stencil.writemask);
+    pbgl.stencil.dirty = GL_FALSE;
+  }
+
+  if (pbgl.polyofs.dirty) {
+    p = push_command_boolean(p, NV097_SET_POLY_OFFSET_FILL_ENABLE, pbgl.flags.poly_offset);
+    p = push_command_float(p, NV097_SET_POLYGON_OFFSET_SCALE_FACTOR, pbgl.polyofs.factor);
+    p = push_command_float(p, NV097_SET_POLYGON_OFFSET_BIAS, pbgl.polyofs.units);
+    pbgl.polyofs.dirty = GL_FALSE;
+  }
+
+  if (pbgl.polymode.dirty) {
+    p = push_command_parameter(p, NV097_SET_FRONT_POLYGON_MODE, pbgl.polymode.front_mode);
+    p = push_command_parameter(p, NV097_SET_BACK_POLYGON_MODE, pbgl.polymode.back_mode);
+    pbgl.polymode.dirty = GL_FALSE;
+  }
+
+  if (pbgl.cullface.dirty) {
+    p = push_command_parameter(p, NV097_SET_FRONT_FACE, pbgl.cullface.frontface);
+    p = push_command_boolean(p, NV097_SET_CULL_FACE_ENABLE, pbgl.flags.cull_face);
+    p = push_command_parameter(p, NV097_SET_CULL_FACE, pbgl.cullface.cullface);
+    pbgl.cullface.dirty = GL_FALSE;
+  }
+
+  if (pbgl.fog.dirty) {
+    p = push_command_boolean(p, NV097_SET_FOG_ENABLE, pbgl.flags.fog);
+    p = push_command_parameter(p, NV097_SET_FOG_MODE, pbgl.fog.mode);
+    p = push_command_parameter(p, NV097_SET_FOG_COLOR, pbgl.fog.color);
+    // the fog coordinate is the eye space depth, like GL's: -z_eye
+    p = push_command_parameter(p, NV097_SET_FOG_GEN_MODE, NV097_SET_FOG_GEN_MODE_V_PLANAR);
+    p = push_command(p, NV097_SET_FOG_PLANE, 4);
+    p = push_float(p, 0.f);
+    p = push_float(p, 0.f);
+    p = push_float(p, -1.f);
+    p = push_float(p, 0.f);
+    // linear: f = bias + d * scale - 1 (the hardware takes one off), so
+    // bias = 1 + end / (end - start) and scale = -1 / (end - start).
+    // exp/exp2 only use the density in the scale.
+    {
+      GLfloat bias = 0.f, scale = 0.f;
+      if (pbgl.fog.mode == GL_LINEAR) {
+        const GLfloat range = pbgl.fog.end - pbgl.fog.start;
+        if (range != 0.f) {
+          bias = 1.f + pbgl.fog.end / range;
+          scale = -1.f / range;
+        } else {
+          bias = 2.f; // no fog
+        }
+      } else if (pbgl.fog.mode == GL_EXP) {
+        bias = 1.5f;
+        scale = -pbgl.fog.density * 0.0902f; // log2(e) / 16
+      } else {
+        bias = 1.5f;
+        scale = pbgl.fog.density * 0.2123f; // sqrt(log2(e) / 32), squared by the hardware
+      }
+      p = push_command(p, NV097_SET_FOG_PARAMS, 3);
+      p = push_float(p, bias);
+      p = push_float(p, scale);
+      p = push_float(p, 0.f);
+    }
+    pbgl.fog.dirty = GL_FALSE;
+  }
+
+  if (pbgl.colormask.dirty) {
+    p = push_command_parameter(p, NV097_SET_COLOR_MASK, pbgl.colormask.value);
+    pbgl.colormask.dirty = GL_FALSE;
+  }
+
+  if (pbgl.view.dirty) {
+    GLfloat znear = pbgl.view.znear * (GLfloat)PBGL_Z_MAX;
+    GLfloat zfar = pbgl.view.zfar * (GLfloat)PBGL_Z_MAX;
+    GLfloat clipmin = znear, clipmax = zfar;
+    if (zfar - znear < 1.0f) {
+      // OGX MOHAA: a zero depth range (Quake 3 draws the sky with
+      // glDepthRange(1, 1)) put every fragment exactly on the clip planes and
+      // rounding clipped part of it away. A float has only 1 or 2 units of
+      // precision up here, and the sky's big triangles round by more than that:
+      // any narrow slack left polygons of the sky undrawn. So map it well inside
+      // the depth buffer and don't clip at all; nothing tests against this depth,
+      // since the sky doesn't write it.
+      GLfloat z = znear < 4096.0f ? 4096.0f : (znear > PBGL_Z_MAX - 4096.0f ? (GLfloat)PBGL_Z_MAX - 4096.0f : znear);
+      znear = zfar = z;
+      clipmin = 0.0f;
+      clipmax = (GLfloat)PBGL_Z_MAX;
+    }
+    mat4_viewport(&pbgl.view.mtx, pbgl.view.x, pbgl.view.y, pbgl.view.w, pbgl.view.h, znear, zfar);
+    p = push_command_float(p, NV097_SET_CLIP_MIN, clipmin);
+    p = push_command_float(p, NV097_SET_CLIP_MAX, clipmax);
+    // this goes into the projection matrix, so flag it too
+    pbgl.view.dirty = GL_FALSE;
+    pbgl.mtx_any_dirty = pbgl.mtx[MTX_PROJECTION].dirty = GL_TRUE;
+  }
+
+  if (pbgl.lightmodel.dirty) {
+    p = push_command_parameter(p, NV097_SET_LIGHT_CONTROL, 
+      PBGL_MASK(NV097_SET_LIGHT_CONTROL_SEPARATE_SPECULAR_EN, GL_FALSE) | // TODO: this is probably a GL setting
+      PBGL_MASK(NV097_SET_LIGHT_CONTROL_LOCALEYE, pbgl.lightmodel.local) |
+      PBGL_MASK(NV097_SET_LIGHT_CONTROL_SOUT, NV097_SET_LIGHT_CONTROL_SOUT_ZERO_OUT));
+    p = push_command_boolean(p, NV097_SET_TWO_SIDE_LIGHT_EN, pbgl.lightmodel.twosided);
+    // set both front and back colors just in case
+    p = push_command(p, NV097_SET_SCENE_AMBIENT_COLOR, 3);
+    p = push_floats(p, pbgl.lightmodel.ambient.v, 3);
+    p = push_command(p, NV097_SET_BACK_SCENE_AMBIENT_COLOR, 3);
+    p = push_floats(p, pbgl.lightmodel.ambient.v, 3);
+    pbgl.lightmodel.dirty = GL_FALSE;
+  }
+
+  for (int i = 0; i < 2; ++i) {
+    if (pbgl.material[i].dirty) {
+      // TODO:
+      pbgl.material[i].dirty = GL_FALSE;
+    }
+  }
+
+  pb_end(p);
+
+  if (pbgl.light_any_dirty) {
+    p = pb_begin();
+    p = push_command_boolean(p, NV097_SET_LIGHTING_ENABLE, pbgl.flags.lighting);
+    pb_end(p);
+    if (pbgl.flags.lighting)
+      pbgl_light_flush_all();
+    pbgl.light_any_dirty = GL_FALSE;
+  }
+
+  if (pbgl.tex_any_dirty) {
+    p = pb_begin();
+    for (GLuint i = 0; i < TEXUNIT_COUNT; ++i)
+      p = flush_texunit(p, i);
+    pb_end(p);
+    pbgl.tex_any_dirty = GL_FALSE;
+  }
+
+  if (pbgl.mtx_any_dirty) {
+    p = pb_begin();
+    // push MVP
+    if (pbgl.mtx[MTX_PROJECTION].dirty || pbgl.mtx[MTX_MODELVIEW].dirty) {
+      mat4f tmp;
+      mat4_mul_sse(&tmp, &pbgl.view.mtx, &pbgl.mtx[MTX_PROJECTION].mtx);
+      if (pbgl.mtx[MTX_PROJECTION].dirty)
+        p = push_command_matrix4x4_transposed(p, NV097_SET_PROJECTION_MATRIX, tmp.v);
+      if (pbgl.mtx[MTX_MODELVIEW].dirty) {
+        // inverse modelview matrix only required for lighting, only calculate it when required
+        // lighting toggle will set the dirty flag if needed
+        if (pbgl.flags.lighting) {
+          mat4f invmv;
+          mat4_invert(&invmv, &pbgl.mtx[MTX_MODELVIEW].mtx);
+          p = push_command_matrix4x4(p, NV097_SET_INVERSE_MODEL_VIEW_MATRIX, invmv.v);
+        }
+        p = push_command_matrix4x4_transposed(p, NV097_SET_MODEL_VIEW_MATRIX, pbgl.mtx[MTX_MODELVIEW].mtx.v);
+      }
+      mat4_mul_sse(&tmp, &tmp, &pbgl.mtx[MTX_MODELVIEW].mtx);
+      p = push_command_matrix4x4_transposed(p, NV097_SET_COMPOSITE_MATRIX, tmp.v);
+      pbgl.mtx[MTX_PROJECTION].dirty = pbgl.mtx[MTX_MODELVIEW].dirty = GL_FALSE;
+    }
+    // push texture matrices
+    for (GLuint i = MTX_TEXTURE0, ofs = 0; i < MTX_TEXTURE0 + TEXUNIT_COUNT; ++i, ofs += 4 * 4 * 4) {
+      if (pbgl.mtx[i].dirty) {
+        p = push_command_matrix4x4(p, NV097_SET_TEXTURE_MATRIX + ofs, pbgl.mtx[i].mtx.v);
+        pbgl.mtx[i].dirty = GL_FALSE;
+      }
+    }
+    pb_end(p);
+    pbgl.mtx_any_dirty = GL_FALSE;
+  }
+
+  if (pbgl.texenv_dirty) {
+    p = pb_begin();
+    p = pbgl_texenv_push(p);
+    pb_end(p);
+    pbgl.texenv_dirty = GL_FALSE;
+  }
+
+  if (pbgl.texgen_dirty) {
+    p = pb_begin();
+    p = pbgl_texgen_push(p);
+    pb_end(p);
+    pbgl.texgen_dirty = GL_FALSE;
+  }
+
+  pbgl.state_dirty = GL_FALSE;
+
+  return GL_TRUE;
+}
+
+static inline void set_feature(GLenum feature, GLboolean value) {
+  PBGL_TRACE("%s 0x%x\n", value ? "enable" : "disable", feature);
+  if (pbgl.imm.active) {
+    // can't do this during model creation
+    pbgl_set_error(GL_INVALID_OPERATION);
+    return;
+  }
+
+  GLuint idx = 0;
+
+  switch (feature) {
+    case GL_ALPHA_TEST:
+      FLAG_DIRTY_IF_CHANGED(alpha, alpha_test, value);
+      pbgl.flags.alpha_test = value;
+      break;
+    case GL_DEPTH_TEST:
+      FLAG_DIRTY_IF_CHANGED(depth, depth_test, value);
+      pbgl.flags.depth_test = value;
+      break;
+    case GL_SCISSOR_TEST:
+      FLAG_DIRTY_IF_CHANGED(scissor, scissor_test, value);
+      pbgl.flags.scissor_test = value;
+      break;
+    case GL_STENCIL_TEST:
+      FLAG_DIRTY_IF_CHANGED(stencil, stencil_test, value);
+      pbgl.flags.stencil_test = value;
+      break;
+    case GL_BLEND:
+      FLAG_DIRTY_IF_CHANGED(blend, blend, value);
+      pbgl.flags.blend = value;
+      break;
+    case GL_CULL_FACE:
+      FLAG_DIRTY_IF_CHANGED(cullface, cull_face, value);
+      pbgl.flags.cull_face = value;
+      break;
+    case GL_SHARED_TEXTURE_PALETTE_EXT:
+      if (pbgl.flags.shared_pal != value) {
+        pbgl.flags.shared_pal = value;
+        pbgl.state_dirty = GL_TRUE;
+        pbgl.tex_any_dirty = pbgl.tex[pbgl.active_tex_sv].dirty = GL_TRUE;
+      }
+      break;
+    case GL_DITHER:
+      // TODO
+      pbgl.flags.dither = value;
+      break;
+    case GL_FOG:
+      FLAG_DIRTY_IF_CHANGED(fog, fog, value);
+      // the final combiner blends in the fog only while it's enabled
+      if (pbgl.flags.fog != value)
+        pbgl.texenv_dirty = GL_TRUE;
+      pbgl.flags.fog = value;
+      break;
+    case GL_LIGHT0 ... GL_LIGHT7:
+      idx = feature - GL_LIGHT0;
+      if (pbgl.light[idx].enabled != value)
+        pbgl.state_dirty = pbgl.light_any_dirty = pbgl.light[idx].dirty = GL_TRUE;
+      pbgl.light[idx].enabled = value;
+      break;
+    case GL_LIGHTING:
+      if (pbgl.flags.lighting != value)
+        pbgl.state_dirty = pbgl.light_any_dirty = GL_TRUE;
+      pbgl.flags.lighting = value;
+      // if we're enabling lighting, we'll need to upload the inverse modelview matrix
+      if (value) pbgl.mtx_any_dirty = pbgl.mtx[MTX_MODELVIEW].dirty = GL_TRUE;
+      break;
+    case GL_POLYGON_OFFSET_FILL:
+      FLAG_DIRTY_IF_CHANGED(polyofs, poly_offset, value);
+      pbgl.flags.poly_offset = value;
+      break;
+    case GL_TEXTURE_1D:
+      if (pbgl.tex[pbgl.active_tex_sv].flags.texture_1d != value) {
+        pbgl.tex_any_dirty = GL_TRUE;
+        pbgl.texenv_dirty = GL_TRUE;
+        pbgl.texgen_dirty = GL_TRUE;
+        pbgl.state_dirty = GL_TRUE;
+        pbgl.tex[pbgl.active_tex_sv].dirty = GL_TRUE;
+      }
+      pbgl.tex[pbgl.active_tex_sv].flags.texture_1d = value;
+      break;
+    case GL_TEXTURE_2D:
+      if (pbgl.tex[pbgl.active_tex_sv].flags.texture_2d != value) {
+        pbgl.tex_any_dirty = GL_TRUE;
+        pbgl.texenv_dirty = GL_TRUE;
+        pbgl.texgen_dirty = GL_TRUE;
+        pbgl.state_dirty = GL_TRUE;
+        pbgl.tex[pbgl.active_tex_sv].dirty = GL_TRUE;
+      }
+      pbgl.tex[pbgl.active_tex_sv].flags.texture_2d = value;
+      break;
+    case GL_TEXTURE_GEN_S ... GL_TEXTURE_GEN_Q:
+      idx = feature - GL_TEXTURE_GEN_S;
+      if (pbgl.texgen[pbgl.active_tex_sv].coord[idx].enabled != value) {
+        pbgl.texgen[pbgl.active_tex_sv].coord[idx].enabled = value;
+        pbgl.texgen[pbgl.active_tex_sv].dirty = GL_TRUE;
+        pbgl.state_dirty = pbgl.texgen_dirty = GL_TRUE;
+      }
+      break;
+    case GL_LINE_SMOOTH:
+      if (pbgl.flags.line_smooth != value) {
+          pbgl.flags.line_smooth = value;
+          pbgl.line.dirty = GL_TRUE;
+          pbgl.state_dirty = GL_TRUE;
+      }
+      break;
+    default:
+      pbgl_set_error(GL_INVALID_ENUM);
+      break;
+  }
+}
+
+static inline void set_client_state(GLenum state, GLboolean value) {
+  if (pbgl.imm.active) {
+    // can't do this during model creation
+    pbgl_set_error(GL_INVALID_OPERATION);
+    return;
+  }
+
+  const GLenum arr = glarr_to_varr(state);
+  if (arr == GL_INVALID_ENUM) {
+    pbgl_set_error(GL_INVALID_ENUM);
+    return;
+  }
+
+  // OGX MOHAA: texcoord arrays live in the texture units. Upstream fell
+  // through to pbgl.varray[VARR_TEXCOORD] when the state did not change; that
+  // is one past the end of varray[] and overwrote pbgl.tex[0].flags (turning
+  // GL_TEXTURE_2D off behind the application's back).
+  if (arr == VARR_TEXCOORD) {
+    if (pbgl.tex[pbgl.active_tex_cl].varray.enabled != value) {
+      pbgl.tex[pbgl.active_tex_cl].varray.enabled = value;
+      pbgl.tex[pbgl.active_tex_cl].varray.dirty = GL_TRUE;
+    }
+  } else if (pbgl.varray[arr].enabled != value) {
+    pbgl.varray[arr].enabled = value;
+    pbgl.varray[arr].dirty = GL_TRUE;
+  }
+}
+
+/* GL FUNCTIONS BEGIN */
+
+GL_API void glEnable(GLenum feature) {
+  set_feature(feature, GL_TRUE);
+}
+
+GL_API void glDisable(GLenum feature) {
+  set_feature(feature, GL_FALSE);
+}
+
+GL_API GLboolean glIsEnabled(GLenum feature) {
+  if (pbgl.imm.active) {
+    // can't do this during model creation
+    pbgl_set_error(GL_INVALID_OPERATION);
+    return GL_FALSE;
+  }
+
+  switch (feature) {
+    case GL_ALPHA_TEST:           return pbgl.flags.alpha_test;
+    case GL_DEPTH_TEST:           return pbgl.flags.depth_test;
+    case GL_SCISSOR_TEST:         return pbgl.flags.scissor_test;
+    case GL_STENCIL_TEST:         return pbgl.flags.stencil_test;
+    case GL_BLEND:                return pbgl.flags.blend;
+    case GL_CULL_FACE:            return pbgl.flags.cull_face;
+    case GL_DITHER:               return pbgl.flags.dither;
+    case GL_FOG:                  return pbgl.flags.fog;
+    case GL_LIGHT0 ... GL_LIGHT7: return pbgl.light[feature - GL_LIGHT0].enabled;
+    case GL_LIGHTING:             return pbgl.flags.lighting;
+    case GL_POLYGON_OFFSET_FILL:  return pbgl.flags.poly_offset;
+    case GL_TEXTURE_1D:           return pbgl.tex[pbgl.active_tex_sv].flags.texture_1d;
+    case GL_TEXTURE_2D:           return pbgl.tex[pbgl.active_tex_sv].flags.texture_2d;
+    case GL_TEXTURE_GEN_S:        return pbgl.texgen[pbgl.active_tex_sv].coord[0].enabled;
+    case GL_TEXTURE_GEN_T:        return pbgl.texgen[pbgl.active_tex_sv].coord[1].enabled;
+    case GL_TEXTURE_GEN_R:        return pbgl.texgen[pbgl.active_tex_sv].coord[2].enabled;
+    case GL_TEXTURE_GEN_Q:        return pbgl.texgen[pbgl.active_tex_sv].coord[3].enabled;
+    case GL_LINE_SMOOTH:          return pbgl.flags.line_smooth;
+    case GL_SHARED_TEXTURE_PALETTE_EXT: return pbgl.flags.shared_pal;
+    default:
+      pbgl_set_error(GL_INVALID_ENUM);
+      return GL_FALSE;
+  }
+}
+
+GL_API void glEnableClientState(GLenum state) {
+  PBGL_TRACE("enableclient 0x%x\n", state);
+  set_client_state(state, GL_TRUE);
+}
+
+GL_API void glDisableClientState(GLenum state) {
+  PBGL_TRACE("disableclient 0x%x\n", state);
+  set_client_state(state, GL_FALSE);
+}
+
+// technically all of these should produce various errors, but fuck all those branches
+
+GL_API void glAlphaFunc(GLenum func, GLclampf ref) {
+  PBGL_TRACE("alphafunc 0x%x %d/100\n", func, (int)(ref * 100.f));
+  const GLubyte uref = ref * 255.f;
+  if (pbgl.alpha.func != func || pbgl.alpha.ref != uref) {
+    pbgl.state_dirty = pbgl.alpha.dirty = GL_TRUE;
+    pbgl.alpha.func = func;
+    pbgl.alpha.ref = uref;
+  }
+}
+
+GL_API void glBlendColor(GLclampf rf, GLclampf gf, GLclampf bf, GLclampf af) {
+  const GLubyte r = rf * 255.f;
+  const GLubyte g = gf * 255.f;
+  const GLubyte b = bf * 255.f;
+  const GLubyte a = af * 255.f;
+  const GLuint color = (a << 24) | (r << 16) | (g << 8) | b;
+  if (pbgl.blend.color != color) {
+    pbgl.state_dirty = pbgl.blend.dirty = GL_TRUE;
+    pbgl.blend.color = color;
+  }
+}
+
+GL_API void glBlendEquation(GLenum eqn) {
+  if (pbgl.blend.eqn != eqn) {
+      pbgl.state_dirty = pbgl.blend.dirty = GL_TRUE;
+    pbgl.blend.eqn = eqn;
+  }
+}
+
+GL_API void glBlendFunc(GLenum sfactor, GLenum dfactor) {
+  PBGL_TRACE("blendfunc 0x%x 0x%x\n", sfactor, dfactor);
+  if (pbgl.blend.src != sfactor || pbgl.blend.dst != dfactor) {
+    pbgl.state_dirty = pbgl.blend.dirty = GL_TRUE;
+    pbgl.blend.src = sfactor;
+    pbgl.blend.dst = dfactor;
+  }
+}
+
+GL_API void glClearColor(GLclampf rf, GLclampf gf, GLclampf bf, GLclampf af) {
+  const GLubyte r = rf * 255.f;
+  const GLubyte g = gf * 255.f;
+  const GLubyte b = bf * 255.f;
+  const GLubyte a = af * 255.f;
+  pbgl.clear_color = (a << 24) | (r << 16) | (g << 8) | b;
+}
+
+GL_API void glClearDepth(GLclampd val) {
+  const GLuint uval = (GLuint)(val * PBGL_Z_MAX);
+  pbgl.clear_zstencil = (pbgl.clear_zstencil & 0x000000FF) | (uval << 8);
+}
+
+GL_API void glClearStencil(GLint val) {
+  const GLuint uval = ((GLuint)val) & 0xFF;
+  pbgl.clear_zstencil = (pbgl.clear_zstencil & 0xFFFFFF00) | uval;
+}
+
+GL_API void glColorMask(GLboolean r, GLboolean g, GLboolean b, GLboolean a) {
+  PBGL_TRACE("colormask %d %d %d %d\n", r, g, b, a);
+  const GLuint oldmask = pbgl.colormask.value;
+  pbgl.colormask.value = 0;
+  if (r) pbgl.colormask.value |= NV097_SET_COLOR_MASK_RED_WRITE_ENABLE;
+  if (g) pbgl.colormask.value |= NV097_SET_COLOR_MASK_GREEN_WRITE_ENABLE;
+  if (b) pbgl.colormask.value |= NV097_SET_COLOR_MASK_BLUE_WRITE_ENABLE;
+  if (a) pbgl.colormask.value |= NV097_SET_COLOR_MASK_ALPHA_WRITE_ENABLE;
+  if (oldmask != pbgl.colormask.value)
+    pbgl.state_dirty = pbgl.colormask.dirty = GL_TRUE;
+}
+
+GL_API void glCullFace(GLenum face) {
+  if (pbgl.cullface.cullface != face)
+    pbgl.state_dirty = pbgl.cullface.dirty = GL_TRUE;
+  pbgl.cullface.cullface = face;
+}
+
+GL_API void glDepthFunc(GLenum func) {
+  if (pbgl.depth.func != func)
+    pbgl.state_dirty = pbgl.depth.dirty = GL_TRUE;
+  pbgl.depth.func = func;
+}
+
+GL_API void glDepthMask(GLboolean write) {
+  PBGL_TRACE("depthmask %d\n", write);
+  if (pbgl.depth.writemask != write)
+    pbgl.state_dirty = pbgl.depth.dirty = GL_TRUE;
+  pbgl.depth.writemask = write;
+}
+
+GL_API void glDepthRange(GLclampd znear, GLclampd zfar) {
+  PBGL_TRACE("depthrange %d %d (x100)\n", (int)(znear * 100.0), (int)(zfar * 100.0));
+  if (pbgl.view.znear != znear || pbgl.view.zfar != zfar)
+    pbgl.state_dirty = pbgl.view.dirty = GL_TRUE;
+  pbgl.view.znear = znear;
+  pbgl.view.zfar = zfar;
+}
+
+GL_API void glFrontFace(GLenum face) {
+  if (pbgl.cullface.frontface != face)
+    pbgl.state_dirty = pbgl.cullface.dirty = GL_TRUE;
+  pbgl.cullface.frontface = face;
+}
+
+GL_API void glLineWidth(GLfloat width) {
+  // TODO:
+}
+
+GL_API void glPixelStorei(GLenum pname, GLint param) {
+  if (param != 1 && param != 2 && param != 4 && param != 8) {
+    pbgl_set_error(GL_INVALID_VALUE);
+    return;
+  }
+  switch (pname) {
+    case GL_PACK_ALIGNMENT:
+      pbgl.pack_align = param;
+      break;
+    case GL_UNPACK_ALIGNMENT:
+      pbgl.unpack_align = param;
+      break;
+    default:
+      pbgl_set_error(GL_INVALID_ENUM);
+      break;
+  }
+}
+
+GL_API void glPolygonMode(GLenum face, GLenum mode) {
+  if (pbgl.imm.active) {
+    // can't do this during model creation
+    pbgl_set_error(GL_INVALID_OPERATION);
+    return;
+  }
+
+  // Front and back seem to use the same defines?
+  uint32_t xbox_mode = NV097_SET_FRONT_POLYGON_MODE_V_FILL;
+
+  switch (mode) {
+    case GL_POINT:
+      xbox_mode = NV097_SET_FRONT_POLYGON_MODE_V_POINT;
+      break;
+    case GL_LINE:
+      xbox_mode = NV097_SET_FRONT_POLYGON_MODE_V_LINE;
+      break;
+    case GL_FILL:
+      // Default value
+      break;
+    default:
+      pbgl_set_error(GL_INVALID_ENUM);
+      return;
+  }
+
+  switch (face) {
+    case GL_FRONT:
+      pbgl.polymode.front_mode = xbox_mode;
+      break;
+    case GL_BACK:
+      pbgl.polymode.back_mode = xbox_mode;
+      break;
+    case GL_FRONT_AND_BACK:
+      pbgl.polymode.front_mode = xbox_mode;
+      pbgl.polymode.back_mode = xbox_mode;
+      break;
+    default:
+      pbgl_set_error(GL_INVALID_ENUM);
+      return;
+  }
+
+  pbgl.state_dirty = pbgl.polymode.dirty = GL_TRUE;
+}
+
+GL_API void glPointSize(GLfloat size) {
+  // TODO:
+}
+
+GL_API void glPolygonOffset(GLfloat factor, GLfloat units) {
+  if (pbgl.polyofs.factor != factor || pbgl.polyofs.units != units)
+    pbgl.state_dirty = pbgl.polyofs.dirty = GL_TRUE;
+  pbgl.polyofs.factor = factor;
+  pbgl.polyofs.units = units;
+}
+
+GL_API void glScissor(GLint x, GLint y, GLint width, GLint height) {
+  PBGL_TRACE("scissor %d %d %d %d\n", x, y, width, height);
+  pbgl.scissor.x = x;
+  pbgl.scissor.y = y;
+  pbgl.scissor.w = width;
+  pbgl.scissor.h = height;
+  pbgl.state_dirty = pbgl.scissor.dirty = GL_TRUE;
+}
+
+GL_API void glShadeModel(GLenum model) {
+  // TODO
+}
+
+GL_API void glStencilFunc(GLenum func, GLint ref, GLuint mask) {
+  if (pbgl.stencil.func != func || pbgl.stencil.ref != ref || pbgl.stencil.funcmask != mask)
+    pbgl.state_dirty = pbgl.stencil.dirty = GL_TRUE;
+  pbgl.stencil.func = func;
+  pbgl.stencil.ref = ref;
+  pbgl.stencil.funcmask = mask;
+}
+
+GL_API void glStencilMask(GLuint mask) {
+  if (pbgl.stencil.writemask != mask)
+    pbgl.state_dirty = pbgl.stencil.dirty = GL_TRUE;
+  pbgl.stencil.writemask = mask;
+}
+
+GL_API void glStencilOp(GLenum sfail, GLenum zfail, GLenum zpass) {
+  if (pbgl.stencil.op_sfail != sfail || pbgl.stencil.op_zfail != zfail || pbgl.stencil.op_zpass != zpass)
+    pbgl.state_dirty = pbgl.stencil.dirty = GL_TRUE;
+  pbgl.stencil.op_sfail = sfail;
+  pbgl.stencil.op_zfail = zfail;
+  pbgl.stencil.op_zpass = zpass;
+}
+
+GL_API void glViewport(GLint x, GLint y, GLsizei width, GLsizei height) {
+  PBGL_TRACE("viewport %d %d %d %d\n", x, y, width, height);
+  // TODO: rendertargets, if I add support for them
+  y = pbgl.fb_height - y - height;
+  if (pbgl.view.x != x || pbgl.view.y != y || pbgl.view.w != width || pbgl.view.h != height)
+    pbgl.state_dirty = pbgl.view.dirty = GL_TRUE;
+  pbgl.view.x = x;
+  pbgl.view.y = y;
+  pbgl.view.w = width;
+  pbgl.view.h = height;
+}

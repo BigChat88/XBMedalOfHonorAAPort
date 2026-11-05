@@ -1,0 +1,37 @@
+[general]
+show_welcome = false
+last_viewed_menu_index = 6
+
+[input]
+gamepad_mappings = [
+    { gamepad_id = '0300fa675e0400008e02000010017801'},
+    { gamepad_id = '0300fa675e040000130b000023057801'}
+    ]
+
+[input.bindings]
+port1_driver = 'usb-xbox-gamepad'
+port1 = 'keyboard'
+port2_driver = 'usb-xbox-gamepad'
+port2 = '0300fa675e040000130b000023057801'
+
+[input.keyboard_controller_scancode_map]
+lstick_up = 12
+lstick_left = 13
+lstick_right = 15
+lstick_down = 14
+ltrigger = 20
+rstick_up = 23
+rstick_left = 9
+rstick_right = 11
+rstick_down = 10
+rtrigger = 8
+
+[sys]
+mem_limit = '128'
+
+[sys.files]
+bootrom_path = 'C:/path/to/mcpx_1.0.bin'
+flashrom_path = 'C:/path/to/bios.bin'
+eeprom_path = 'C:/path/to/eeprom.bin'
+hdd_path = 'C:/path/to/xbox_hdd.qcow2'
+

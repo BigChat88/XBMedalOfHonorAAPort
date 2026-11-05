@@ -1,0 +1,2 @@
+imageio-ffmpeg  # music conversion (optional: --no-music skips it)
+Pillow          # the cover for the dashboards

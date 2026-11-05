@@ -1,0 +1,54 @@
+# --- copyrighted game data: never commit ---
+# Bring your own copy of the game; see gamedata/README.md.
+/gamedata/*
+!/gamedata/README.md
+# the box art belongs to the game too: a local cover, for tools/make_artwork.py
+/assets/
+
+# --- build output ---
+/output/*
+!/output/README.md
+*.iso
+*.xbe
+*.exe
+*.obj
+*.lib
+*.d
+*.map
+/xbox/mohaa/build/
+/xbox/mohaa/bin/
+/xbox/mohaa/undefined.txt
+# prebuilt game in release bundles (built by CI)
+/engine/
+# CI staging
+/stage/
+
+# --- local development / testing ---
+*.log
+# has the paths of your BIOS and hard disk: copy xemu-128.example.toml
+/tools/xemu/xemu-128.toml
+/tools/openmohaa-pc/
+# the first experiments, before the port
+/xbox/audiotest/
+/xbox/linktest/
+/xbox/nxdk-triangle/
+/xbox/pbgltest/
+/xbox/probe/
+/xbox/probe-big/
+/.nxdk-ref/
+# the port's changes as patches, from when third_party wasn't part of the repository
+/xbox/patches/
+
+# --- third_party's own git history (see third_party/README.md) ---
+/.upstream/
+
+# --- editors / OS / python ---
+/.vscode/
+.vs/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
+__pycache__/
+*.pyc
