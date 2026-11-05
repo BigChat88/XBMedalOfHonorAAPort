@@ -847,7 +847,8 @@ void Skeletor_XboxPackAnim(skelAnimDataGameHeader_t *anim)
         channel->ary_frames = (skanGameFrame *)dst;
     }
 
-    // the first channel starts the block (DeallocAnimData frees it from there)
+    // the first channel starts the block, after the scale if it is a position
+    // channel (DeallocAnimData frees it from there)
     anim->flags |= TAF_XBOX_PACKED;
 
 }

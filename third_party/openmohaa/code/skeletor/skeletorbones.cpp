@@ -170,15 +170,24 @@ float *DecodeRLEPosValue(skanChannelHdr *channelFrames, int desiredFrameNum)
     // the callers use it right away
     static vec3_t                 pos;
     const skanGameFramePosPacked *frames = (const skanGameFramePosPacked *)channelFrames->ary_frames;
-    const skanGameFramePosPacked *found  = frames;
+    const skanGameFramePosPacked *found;
     const float                   scale  = ((const float *)frames)[-1];
     int                           n;
+    int                           lo = 0, hi = channelFrames->nFramesInChannel;
 
-    for (n = 0; n < channelFrames->nFramesInChannel; n++, found++) {
-        if (found->nFrameNum >= desiredFrameNum) {
-            break;
+    // OGX MOHAA: the first key frame at or after the wanted one. This runs for each
+    // bone and blended animation of every model on every frame, and walking the
+    // list from the start cost most in the long animations of the scripted scenes.
+    while (lo < hi) {
+        const int mid = (lo + hi) >> 1;
+        if (frames[mid].nFrameNum >= desiredFrameNum) {
+            hi = mid;
+        } else {
+            lo = mid + 1;
         }
     }
+    n     = lo;
+    found = frames + lo;
     if (n == channelFrames->nFramesInChannel) {
         found--; // past the last key frame
     }
@@ -219,14 +228,21 @@ float *DecodeRLERotValue(skanChannelHdr *channelFrames, int desiredFrameNum)
     // the callers use it right away
     static vec4_t                 quat;
     const skanGameFrameRotPacked *frames = (const skanGameFrameRotPacked *)channelFrames->ary_frames;
-    const skanGameFrameRotPacked *found  = frames;
+    const skanGameFrameRotPacked *found;
     int                           n;
+    int                           lo = 0, hi = channelFrames->nFramesInChannel;
 
-    for (n = 0; n < channelFrames->nFramesInChannel; n++, found++) {
-        if (found->nFrameNum >= desiredFrameNum) {
-            break;
+    // OGX MOHAA: see DecodeRLEPosValue
+    while (lo < hi) {
+        const int mid = (lo + hi) >> 1;
+        if (frames[mid].nFrameNum >= desiredFrameNum) {
+            hi = mid;
+        } else {
+            lo = mid + 1;
         }
     }
+    n     = lo;
+    found = frames + lo;
     if (n == channelFrames->nFramesInChannel) {
         found--; // past the last key frame: same as the float path's last frame
     }

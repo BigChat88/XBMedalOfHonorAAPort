@@ -414,6 +414,10 @@ void R_AddMarkFragmentsToTerrain(
 }
 
 #ifdef NXDK
+// OGX MOHAA: the box around a mark being cut, for R_TessellateMarkFragments
+static qboolean r_xboxMarkBounds;
+static vec3_t   r_xboxMarkMins, r_xboxMarkMaxs;
+
 // OGX MOHAA: marks recompute their fragments every frame (character shadows do),
 // and most triangles of a nearby surface don't touch the mark. These answer what
 // the chops of R_AddMarkFragments and a normalized normal would, for less.
@@ -508,6 +512,21 @@ void R_TessellateMarkFragments(
                     numClipPoints = 3;
 
                     dv = cv->verts + m * cv->width + n;
+
+#ifdef NXDK
+                    // OGX MOHAA: a cell away from the mark, without looking at its triangles
+                    if (r_xboxMarkBounds) {
+                        const float *c0 = dv[0].xyz, *c1 = dv[1].xyz, *c2 = dv[cv->width].xyz, *c3 = dv[cv->width + 1].xyz;
+                        if ((c0[0] < r_xboxMarkMins[0] && c1[0] < r_xboxMarkMins[0] && c2[0] < r_xboxMarkMins[0] && c3[0] < r_xboxMarkMins[0])
+                            || (c0[0] > r_xboxMarkMaxs[0] && c1[0] > r_xboxMarkMaxs[0] && c2[0] > r_xboxMarkMaxs[0] && c3[0] > r_xboxMarkMaxs[0])
+                            || (c0[1] < r_xboxMarkMins[1] && c1[1] < r_xboxMarkMins[1] && c2[1] < r_xboxMarkMins[1] && c3[1] < r_xboxMarkMins[1])
+                            || (c0[1] > r_xboxMarkMaxs[1] && c1[1] > r_xboxMarkMaxs[1] && c2[1] > r_xboxMarkMaxs[1] && c3[1] > r_xboxMarkMaxs[1])
+                            || (c0[2] < r_xboxMarkMins[2] && c1[2] < r_xboxMarkMins[2] && c2[2] < r_xboxMarkMins[2] && c3[2] < r_xboxMarkMins[2])
+                            || (c0[2] > r_xboxMarkMaxs[2] && c1[2] > r_xboxMarkMaxs[2] && c2[2] > r_xboxMarkMaxs[2] && c3[2] > r_xboxMarkMaxs[2])) {
+                            continue;
+                        }
+                    }
+#endif
 
                     VectorCopy(dv[0].xyz, clipPoints[0][0]);
                     VectorMA(clipPoints[0][0], MARKER_OFFSET, dv[0].normal, clipPoints[0][0]);
@@ -698,6 +717,18 @@ int R_MarkFragments( int numPoints, const vec3_t *points, const vec3_t projectio
 	R_BoxSurfaces_r(tr.world->nodes, mins, maxs, surfaces, 64, &numsurfaces, projectionDir);
 	if (!numsurfaces) return 0;
 
+#ifdef NXDK
+	// the planes above reach past the box along the projection by frontpush or backpush
+	{
+		const float margin = (frontpush > backpush ? frontpush : backpush) + 1;
+		for (i = 0; i < 3; i++) {
+			r_xboxMarkMins[i] = mins[i] - margin;
+			r_xboxMarkMaxs[i] = maxs[i] + margin;
+		}
+		r_xboxMarkBounds = qtrue;
+	}
+#endif
+
     R_TessellateMarkFragments(
         &returnedPoints,
         &returnedFragments,
@@ -713,6 +744,10 @@ int R_MarkFragments( int numPoints, const vec3_t *points, const vec3_t projectio
         fragmentBuffer,
         fRadiusSquared
 	);
+
+#ifdef NXDK
+	r_xboxMarkBounds = qfalse;
+#endif
 
     return returnedFragments;
 

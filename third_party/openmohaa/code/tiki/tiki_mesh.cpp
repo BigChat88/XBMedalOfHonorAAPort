@@ -30,6 +30,10 @@ int             skeletorMorphCacheIndex;
 // OGX MOHAA: aligned for the SSE skinning (RB_SkelMesh)
 __attribute__((aligned(16)))
 #endif
+#ifdef NXDK
+// OGX MOHAA: the SSE skinning in tr_model.cpp reads its rows 16 bytes at a time
+__attribute__((aligned(16)))
+#endif
 skelBoneCache_t TIKI_Skel_Bones[MAX_SKELBONES];
 int             skeletorMorphCache[MAX_SKELMORPH];
 

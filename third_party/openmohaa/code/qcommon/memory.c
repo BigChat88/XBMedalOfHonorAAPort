@@ -111,7 +111,12 @@ void Z_Free( void *ptr )
 	}
 
 	if( block->id != ZONEID ) {
+#ifdef NXDK
+		// OGX MOHAA: the caller, to find it in build/main.map
+		Com_Error( ERR_FATAL, "Z_Free: freed a pointer without ZONEID (%p, from %p)", ptr, __builtin_return_address( 0 ) );
+#else
 		Com_Error( ERR_FATAL, "Z_Free: freed a pointer without ZONEID" );
+#endif
 	}
 
 	// check the memory trash tester
@@ -223,8 +228,29 @@ void *Z_TagMalloc( int size, int tag ) {
 				Com_Printf( "OpenAL copied sample data: %u KB\n", Xbox_AL_CopiedBytes() / 1024 );
 			}
 		}
-		Com_Error( ERR_FATAL, "Z_TagMalloc: failed to allocate %i bytes (tag %i, %lu KB available)",
-			size, tag, ms.AvailablePages * 4 );
+		{
+			// OGX MOHAA: the summary goes in the message itself: on a console it is all
+			// there is, and the shutdown's own lines push the log above off the screen
+			extern unsigned int pbgl_tex_get_used_memory( void );
+			extern unsigned int Xbox_AL_CopiedBytes( void );
+			char summary[ 512 ];
+			size_t len = 0;
+
+			summary[ 0 ] = 0;
+			for( int k = 0; k < TAG_NUM_TOTAL_TAGS; k++ ) {
+				size_t total = 0;
+				for( memblock_t *b = mem_blocks[ k ].next; b && b != &mem_blocks[ k ]; b = b->next ) {
+					total += b->size;
+				}
+				if( total >= 1024 * 1024 && len < sizeof( summary ) - 24 ) {
+					len += Com_sprintf( summary + len, sizeof( summary ) - len, " %d:%uK", k, (unsigned)( total >> 10 ) );
+				}
+			}
+			Com_Error( ERR_FATAL, "Z_TagMalloc: failed to allocate %i bytes (tag %i, %lu KB available, from %p) "
+				"tag:KB%s, textures %uK, sounds %uK",
+				size, tag, ms.AvailablePages * 4, __builtin_return_address( 0 ),
+				summary, pbgl_tex_get_used_memory() / 1024, Xbox_AL_CopiedBytes() / 1024 );
+		}
 	}
 #endif
 	block->id = ZONEID;

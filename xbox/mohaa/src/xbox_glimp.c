@@ -162,7 +162,9 @@ void GLimp_Init(qboolean fixedFunction)
     // Always in sync with the TV's vertical blank: without it the buffers flip
     // mid-scan and the picture tears (very visible in the cinematics).
     // r_swapInterval is ignored, a saved PC-style config has it at 0.
-    pbgl_set_swap_interval(1);
+    // Two vertical blanks per frame at most: 30 fps on a 60 Hz TV (25 at 50 Hz),
+    // so the frame rate holds steady instead of swinging between 30 and 60.
+    pbgl_set_swap_interval(2);
 
     GLimp_SetProcAddresses();
     sscanf((const char *)glGetString(GL_VERSION), "%d.%d", &qglMajorVersion, &qglMinorVersion);

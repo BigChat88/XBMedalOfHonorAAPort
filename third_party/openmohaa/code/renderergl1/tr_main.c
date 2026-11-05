@@ -24,6 +24,10 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "tr_local.h"
 #include "../corepp/tiki.h"
 
+#ifdef __SSE__
+#include <xmmintrin.h>
+#endif
+
 trGlobals_t		tr;
 
 static float	s_flipMatrix[16] = {
@@ -280,6 +284,20 @@ myGlMultMatrix
 */
 void myGlMultMatrix( const float *a, const float *b, float *out ) {
 	int		i, j;
+
+#ifdef __SSE__
+	{
+		const __m128 b0 = _mm_loadu_ps( b ), b1 = _mm_loadu_ps( b + 4 ), b2 = _mm_loadu_ps( b + 8 ), b3 = _mm_loadu_ps( b + 12 );
+
+		for ( i = 0 ; i < 4 ; i++ ) {
+			const __m128 row = _mm_loadu_ps( a + i * 4 );
+			_mm_storeu_ps( out + i * 4, _mm_add_ps(
+				_mm_add_ps( _mm_mul_ps( _mm_shuffle_ps( row, row, 0x00 ), b0 ), _mm_mul_ps( _mm_shuffle_ps( row, row, 0x55 ), b1 ) ),
+				_mm_add_ps( _mm_mul_ps( _mm_shuffle_ps( row, row, 0xAA ), b2 ), _mm_mul_ps( _mm_shuffle_ps( row, row, 0xFF ), b3 ) ) ) );
+		}
+		return;
+	}
+#endif
 
 	for ( i = 0 ; i < 4 ; i++ ) {
 		for ( j = 0 ; j < 4 ; j++ ) {

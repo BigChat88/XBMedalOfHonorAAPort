@@ -1,5 +1,6 @@
 #include <pbkit/pbkit.h>
 #include <string.h>
+#include <xmmintrin.h>
 
 #include "GL/gl.h"
 #include "GL/glext.h"
@@ -32,6 +33,34 @@ unsigned long long pbgl_perf_ticks(void);
 static GLubyte *vstage;
 static GLuint vstage_pos;
 
+// OGX MOHAA: the vertices a draw uses, when the caller knows them: no need to look for them in its indices
+static GLuint vrange_first, vrange_count;
+
+GL_API void glDrawRangeElements(GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const void *indices) {
+  vrange_first = start;
+  vrange_count = end - start + 1;
+  glDrawElements(mode, count, type, indices);
+  vrange_count = 0;
+}
+
+// OGX MOHAA: the ring is write combined memory, which the CPU never reads back:
+// non temporal stores of 16 bytes at a time go to it straight, past the caches.
+static inline void vstage_stream(void *dst, const void *src, GLuint bytes) {
+  float *to = dst;
+  const float *from = src;
+  GLuint blocks = bytes >> 4;
+
+  if (((GLuint)from & 15) == 0) {
+    for (; blocks; blocks--, to += 4, from += 4)
+      _mm_stream_ps(to, _mm_load_ps(from));
+  } else {
+    for (; blocks; blocks--, to += 4, from += 4)
+      _mm_stream_ps(to, _mm_loadu_ps(from));
+  }
+  if (bytes & 15)
+    memcpy(to, from, bytes & 15);
+}
+
 static inline GLuint gltype_size(const GLenum gltype) {
   switch(gltype) {
     case GL_FLOAT:         return 4;
@@ -49,10 +78,10 @@ static const void *vstage_copy(const void *src, GLuint bytes) {
       return NULL;
   }
 
-  bytes = ALIGN(bytes, MEM_ALIGNMENT);
-  if (bytes > VSTAGE_SIZE)
+  GLuint size = ALIGN(bytes, MEM_ALIGNMENT);
+  if (size > VSTAGE_SIZE)
     return NULL;
-  if (vstage_pos + bytes > VSTAGE_SIZE) {
+  if (vstage_pos + size > VSTAGE_SIZE) {
     // ran out in the middle of a frame: let the GPU consume what it has
     unsigned long long t0 = pbgl_perf_ticks();
     while (pb_busy());
@@ -60,11 +89,11 @@ static const void *vstage_copy(const void *src, GLuint bytes) {
     pbgl_perf.ringStalls++;
     vstage_pos = 0;
   }
-  pbgl_perf.stagedBytes += bytes;
+  pbgl_perf.stagedBytes += size;
 
   void *dst = vstage + vstage_pos;
-  memcpy(dst, src, bytes);
-  vstage_pos += bytes;
+  vstage_stream(dst, src, bytes);
+  vstage_pos += size;
   return dst;
 }
 
@@ -187,6 +216,27 @@ static inline GLuint *draw_elements16(GLuint *p, const GLushort *elements, GLuin
   return p;
 }
 
+// OGX MOHAA: the renderer's indices are 32 bits, but rebased they fit in 16: half
+// the bytes in the push buffer for the CPU to write and the GPU to read.
+static inline GLuint *draw_elements32_as16(GLuint *p, const GLuint *elements, GLuint count, GLuint base) {
+  GLuint pairs = count / 2;
+
+  while (pairs > 0) {
+    pb_end(p);
+    p = pb_begin();
+    const GLuint batch = umin(pairs, ARRAY_MAX_BATCH);
+    p = push_command(p, 0x40000000 | NV097_ARRAY_ELEMENT16, batch);
+    for (GLuint i = 0; i < batch; i++, elements += 2)
+      *p++ = (elements[0] - base) | ((elements[1] - base) << 16);
+    pairs -= batch;
+  }
+
+  if (count & 1)
+    p = push_elements32(p, elements, 1, base);
+
+  return p;
+}
+
 static inline GLuint *draw_elements32(GLuint *p, const GLuint *elements, GLuint count, GLuint base) {
   while (count > 0) {
     // start next batch
@@ -245,6 +295,12 @@ void pbgl_array_flush_all(void) {
   pb_end(p);
 }
 
+// OGX MOHAA: what the last array staged, for arrays that share a block of memory:
+// the renderer's two sets of texture coordinates live in one array of 16 bytes per vertex
+static const GLubyte *vstage_last_src;
+static const GLubyte *vstage_last_copy;
+static GLuint vstage_last_stride;
+
 // Stages vertices [vmin, vmax] of one enabled array and points the GPU at the copy.
 static GLuint *array_flush_staged(GLuint *p, varray_state_t *arr, const GLuint nvtarget, GLuint vmin, GLuint vmax) {
   if (!arr->enabled || !arr->data) {
@@ -257,7 +313,19 @@ static GLuint *array_flush_staged(GLuint *p, varray_state_t *arr, const GLuint n
   const GLuint elem = arr->size * gltype_size(arr->type);
   const GLuint stride = arr->stride ? arr->stride : elem;
   const GLubyte *src = (const GLubyte *)arr->data + vmin * stride;
-  const void *copy = vstage_copy(src, (vmax - vmin) * stride + elem);
+  const void *copy;
+
+  if (vstage_last_copy && stride == vstage_last_stride && stride > elem
+      && src >= vstage_last_src && src + elem <= vstage_last_src + stride) {
+    copy = vstage_last_copy + (src - vstage_last_src);
+  } else {
+    // whole vertices when there's room in them, for the array above
+    const GLuint bytes = (vmax - vmin) * stride + (stride > elem ? stride : elem);
+    copy = vstage_copy(src, bytes);
+    vstage_last_src = src;
+    vstage_last_copy = copy;
+    vstage_last_stride = stride;
+  }
 
   p = array_set_attrib_pointer(p, nvtarget, gltype_to_nvtype(arr->type), arr->size, stride, copy);
   // the pointer has to be set again for the next draw
@@ -268,6 +336,8 @@ static GLuint *array_flush_staged(GLuint *p, varray_state_t *arr, const GLuint n
 static void pbgl_array_flush_staged(GLuint vmin, GLuint vmax) {
   GLuint *p = pb_begin();
 
+  vstage_last_copy = NULL;
+
   for (GLuint i = 0; i < VARR_TEXCOORD; ++i)
     p = array_flush_staged(p, &pbgl.varray[i], varr_to_nvarr(i), vmin, vmax);
 
@@ -275,6 +345,9 @@ static void pbgl_array_flush_staged(GLuint vmin, GLuint vmax) {
     if (pbgl.tex[i].enabled)
       p = array_flush_staged(p, &pbgl.tex[i].varray, NV2A_VERTEX_ATTR_TEXTURE0 + i, vmin, vmax);
   }
+
+  // the copies have to reach memory before the GPU reads them
+  _mm_sfence();
 
   // OGX MOHAA: every draw points the arrays at a fresh copy, but its indices
   // start at 0 again; without this the real NV2A reuses transformed vertices
@@ -407,7 +480,12 @@ GL_API void glDrawElements(GLenum prim, GLsizei count, GLenum idxtype, const voi
   }
 
   GLuint vmin, vmax;
-  index_range(idxtype, indices, count, &vmin, &vmax);
+  if (vrange_count) {
+    vmin = vrange_first;
+    vmax = vrange_first + vrange_count - 1;
+  } else {
+    index_range(idxtype, indices, count, &vmin, &vmax);
+  }
 
   pbgl_push_reserve();
   pbgl_state_flush();
@@ -420,6 +498,8 @@ GL_API void glDrawElements(GLenum prim, GLsizei count, GLenum idxtype, const voi
 
   if (idxtype == GL_UNSIGNED_SHORT)
     p = draw_elements16(p, indices, count, vmin);
+  else if (vmax - vmin < 0xFFFF)
+    p = draw_elements32_as16(p, indices, count, vmin);
   else
     p = draw_elements32(p, indices, count, vmin);
 

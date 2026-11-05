@@ -314,6 +314,7 @@ void TIKI_CacheFileSkel(skelHeader_t *pHeader, skelcache_t *cache, int length)
         pGameSurf->numTriangles     = numTriangles;
         pGameSurf->numVerts         = numVerts;
         pGameSurf->pStaticXyz       = NULL;
+        pGameSurf->xboxHasMorphs    = 0;
         pGameSurf->pStaticNormal    = NULL;
         pGameSurf->pStaticTexCoords = NULL;
         pGameSurf->pTriangles       = (skelIndex_t *)gs_ptr;
@@ -361,6 +362,9 @@ void TIKI_CacheFileSkel(skelHeader_t *pHeader, skelcache_t *cache, int length)
                 skelVert->texCoords[1] = FloatNoSwapPtr(&pVert->texCoords[1]);
                 skelVert->numWeights   = numWeights;
                 skelVert->numMorphs    = numMorphs;
+                if (numMorphs) {
+                    pGameSurf->xboxHasMorphs = 1;
+                }
 
                 // copy morphs
                 skeletorMorph_t *pMorph    = (skeletorMorph_t *)((byte *)pVert + sizeof(skeletorVertex_t));

@@ -973,6 +973,12 @@ void R_AddSkelSurfaces(trRefEntity_t *ent)
 // The outputs are 16-byte aligned locals with room for 4 floats (SKEL_DECLARE).
 #    define SKEL_DECLARE(name) __attribute__((aligned(16))) float name[4] = {0, 0, 0, 0}
 
+// The fast loop of RB_SkelMesh stores 16 bytes at a time into tess.xyz
+static_assert(
+    alignof(shaderCommands_t) >= 16 && __builtin_offsetof(shaderCommands_t, xyz) % 16 == 0,
+    "tess.xyz has to be aligned to 16 bytes"
+);
+
 static inline __m128 SkelTransform(float x, float y, float z, const skelBoneCache_t *bone)
 {
     return _mm_add_ps(
@@ -1289,7 +1295,78 @@ void RB_SkelMesh(skelSurfaceGame_t *sf)
         memset(localBones, -1, sizeof(localBones));
     }
 
+#ifdef SKEL_SSE
+    // OGX MOHAA: an entity with morphs active only needs them in its surfaces that have
+    // any, and the plain loop below is what nearly all the vertices of a frame go through
+    const qboolean useMorphs = backEnd.currentEntity->e.hasMorph && sf->xboxHasMorphs;
+
+    if (!useMorphs && !needsNormal) {
+        const __m128 vscale = _mm_set1_ps(scale);
+        float       *outTc  = tess.texCoords[baseVertex][0];
+
+        for (vertNum = 0; vertNum < (int)render_count; vertNum++) {
+            const int           numWeights = newVerts->numWeights;
+            const skelWeight_t *w          = (const skelWeight_t *)((const byte *)newVerts + sizeof(skeletorVertex_t)
+                                                           + sizeof(skeletorMorph_t) * newVerts->numMorphs);
+            __m128              p;
+
+            // the records are read in order: on the console, keep the next ones coming
+            _mm_prefetch((const char *)newVerts + 128, _MM_HINT_T0);
+
+            if (numWeights == 1) {
+                const skelBoneCache_t *b = &bones[mesh > 0 ? SKEL_LOCAL_BONE(w->boneIndex) : w->boneIndex];
+                const __m128           o = _mm_loadu_ps(w->offset);
+
+                p = _mm_add_ps(
+                    _mm_add_ps(
+                        _mm_add_ps(
+                            _mm_mul_ps(_mm_shuffle_ps(o, o, 0x00), _mm_load_ps(b->matrix[0])),
+                            _mm_mul_ps(_mm_shuffle_ps(o, o, 0x55), _mm_load_ps(b->matrix[1]))
+                        ),
+                        _mm_mul_ps(_mm_shuffle_ps(o, o, 0xAA), _mm_load_ps(b->matrix[2]))
+                    ),
+                    _mm_load_ps(b->offset)
+                );
+                // the weight of a lone bone is 1, as an exact value
+                if (*(const int *)&w->boneWeight == 0x3F800000) {
+                    p = _mm_mul_ps(p, vscale);
+                } else {
+                    p = _mm_mul_ps(p, _mm_set1_ps(w->boneWeight * scale));
+                }
+            } else {
+                p = _mm_setzero_ps();
+                for (weightNum = 0; weightNum < numWeights; weightNum++, w++) {
+                    const skelBoneCache_t *b = &bones[mesh > 0 ? SKEL_LOCAL_BONE(w->boneIndex) : w->boneIndex];
+                    const __m128           o = _mm_loadu_ps(w->offset);
+                    const __m128           q = _mm_add_ps(
+                        _mm_add_ps(
+                            _mm_add_ps(
+                                _mm_mul_ps(_mm_shuffle_ps(o, o, 0x00), _mm_load_ps(b->matrix[0])),
+                                _mm_mul_ps(_mm_shuffle_ps(o, o, 0x55), _mm_load_ps(b->matrix[1]))
+                            ),
+                            _mm_mul_ps(_mm_shuffle_ps(o, o, 0xAA), _mm_load_ps(b->matrix[2]))
+                        ),
+                        _mm_load_ps(b->offset)
+                    );
+                    p = _mm_add_ps(p, _mm_mul_ps(q, _mm_set1_ps(w->boneWeight)));
+                }
+                p = _mm_mul_ps(p, vscale);
+            }
+
+            _mm_store_ps(outXyz, p);
+            outXyz += 4;
+            outTc[0] = newVerts->texCoords[0];
+            outTc[1] = newVerts->texCoords[1];
+            outTc += 4;
+
+            newVerts = (skeletorVertex_t *)((byte *)newVerts + sizeof(skeletorVertex_t)
+                                            + sizeof(skeletorMorph_t) * newVerts->numMorphs
+                                            + sizeof(skelWeight_t) * numWeights);
+        }
+    } else if (useMorphs) {
+#else
     if (backEnd.currentEntity->e.hasMorph) {
+#endif
         if (mesh > 0) {
             for (vertNum = 0; vertNum < render_count; vertNum++) {
                 SKEL_DECLARE(normal);

@@ -1249,6 +1249,32 @@ CM_TracePointThroughPatchCollide
   special case for point traces because the patch collide "brushes" have no volume
 ====================
 */
+#ifdef NXDK
+// OGX MOHAA: the relationship with a plane, worked out when a facet asks for it:
+// terrain patches have thousands of planes, and most facets need just one of them
+static int		pointPlaneTrace[MAX_PATCH_PLANES];
+static int		pointPlaneTraceCount;
+
+static void CM_PointPlaneInfo( const traceWork_t *tw, const struct patchCollide_s *pc, int k, qboolean *frontFacing, float *intersection ) {
+	const patchPlane_t *pcPlane = pc->planes + k;
+	float offset, d1, d2;
+
+	pointPlaneTrace[k] = pointPlaneTraceCount;
+	offset = DotProduct( tw->offsets[ pcPlane->signbits ], pcPlane->plane );
+	d1 = DotProduct( tw->start, pcPlane->plane ) - pcPlane->plane[3] + offset;
+	d2 = DotProduct( tw->end, pcPlane->plane ) - pcPlane->plane[3] + offset;
+	frontFacing[k] = d1 > 0 ? qtrue : qfalse;
+	if ( d1 == d2 ) {
+		intersection[k] = 99999;
+	} else {
+		intersection[k] = d1 / ( d1 - d2 );
+		if ( intersection[k] <= 0 ) {
+			intersection[k] = 99999;
+		}
+	}
+}
+#endif
+
 void CM_TracePointThroughPatchCollide( traceWork_t *tw, const struct patchCollide_s *pc ) {
 	qboolean	frontFacing[MAX_PATCH_PLANES];
 	float		intersection[MAX_PATCH_PLANES];
@@ -1268,6 +1294,9 @@ void CM_TracePointThroughPatchCollide( traceWork_t *tw, const struct patchCollid
 	}
 #endif
 
+#ifdef NXDK
+	pointPlaneTraceCount++;
+#else
 	// determine the trace's relationship to all planes
 	pcPlanes = pc->planes;
 	for ( i = 0 ; i < pc->numPlanes ; i++, pcPlanes++ ) {
@@ -1288,11 +1317,17 @@ void CM_TracePointThroughPatchCollide( traceWork_t *tw, const struct patchCollid
 			}
 		}
 	}
+#endif
 
 
 	// see if any of the surface planes are intersected
 	facet = pc->facets;
 	for ( i = 0 ; i < pc->numFacets ; i++, facet++ ) {
+#ifdef NXDK
+		if ( pointPlaneTrace[facet->surfacePlane] != pointPlaneTraceCount ) {
+			CM_PointPlaneInfo( tw, pc, facet->surfacePlane, frontFacing, intersection );
+		}
+#endif
 		if ( !frontFacing[facet->surfacePlane] ) {
 			continue;
 		}
@@ -1305,6 +1340,11 @@ void CM_TracePointThroughPatchCollide( traceWork_t *tw, const struct patchCollid
 		}
 		for ( j = 0 ; j < facet->numBorders ; j++ ) {
 			k = facet->borderPlanes[j];
+#ifdef NXDK
+			if ( pointPlaneTrace[k] != pointPlaneTraceCount ) {
+				CM_PointPlaneInfo( tw, pc, k, frontFacing, intersection );
+			}
+#endif
 			if ( frontFacing[k] != facet->borderInward[j] ) {
 				if ( intersection[k] > intersect ) {
 					break;
@@ -1404,6 +1444,15 @@ void CM_TraceThroughPatchCollide( traceWork_t *tw, const struct patchCollide_s *
 #ifndef BSPC
 	static cvar_t *cv;
 #endif //BSPC
+
+#ifdef NXDK
+	// OGX MOHAA: a patch the trace's box doesn't reach can't stop it
+	if ( tw->bounds[0][0] > pc->bounds[1][0] + 1 || tw->bounds[1][0] < pc->bounds[0][0] - 1
+		|| tw->bounds[0][1] > pc->bounds[1][1] + 1 || tw->bounds[1][1] < pc->bounds[0][1] - 1
+		|| tw->bounds[0][2] > pc->bounds[1][2] + 1 || tw->bounds[1][2] < pc->bounds[0][2] - 1 ) {
+		return;
+	}
+#endif
 
 	if (tw->isPoint) {
 		CM_TracePointThroughPatchCollide( tw, pc );

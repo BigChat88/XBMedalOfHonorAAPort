@@ -278,9 +278,14 @@ void skelAnimDataGameHeader_s::DeallocAnimData(skelAnimDataGameHeader_t *data)
 
 #ifdef NXDK
     if (data->flags & TAF_XBOX_PACKED) {
-        // one block for all the channels, starting at the first one
+        // one block for all the channels, starting at the first one; a position
+        // channel keeps its scale in the float before its frames
         if (data->nTotalChannels > 0 && data->ary_channels[0].ary_frames) {
-            Skel_Free(data->ary_channels[0].ary_frames);
+            byte *block = (byte *)data->ary_channels[0].ary_frames;
+            if (GetBoneChannelType(data->channelList.ChannelName(skeletor_c::ChannelNames(), 0)) == CHANNEL_POSITION) {
+                block -= sizeof(float);
+            }
+            Skel_Free(block);
         }
     } else
 #endif

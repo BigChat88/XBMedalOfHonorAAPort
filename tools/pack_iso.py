@@ -62,6 +62,10 @@ def find_engine():
     return None, None
 
 
+# Files that the build or a test may rewrite are copied, never linked
+LINK_MIN_BYTES = 8 * 1024 * 1024
+
+
 def place(src, dst):
     """Hard link when possible: the game takes 1.3 GB, three times over otherwise."""
     if os.path.exists(dst):
@@ -69,9 +73,17 @@ def place(src, dst):
             return
         os.remove(dst)
     try:
+        if os.path.getsize(src) < LINK_MIN_BYTES:
+            raise OSError
         os.link(src, dst)
     except OSError:
         shutil.copy2(src, dst)
+
+
+def replace_file(src, dst):
+    if os.path.exists(dst):
+        os.remove(dst)
+    shutil.copy2(src, dst)
 
 
 def stage_game(game, stage):
@@ -89,6 +101,8 @@ def stage_game(game, stage):
 
 def write_text(path, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    if os.path.exists(path):
+        os.remove(path)
     with open(path, 'w', encoding='latin1', newline='') as f:
         f.write(text)
 
@@ -135,9 +149,9 @@ def main():
         write_text(os.path.join(stage, 'main', 'ui', name), text)
     print('Menus and texts rewritten for the controller')
 
-    place(os.path.join(engine, 'default.xbe'), os.path.join(stage, 'default.xbe'))
+    replace_file(os.path.join(engine, 'default.xbe'), os.path.join(stage, 'default.xbe'))
     for name in ('autoexec.cfg', 'xbox_default.cfg'):
-        shutil.copyfile(os.path.join(data, name), os.path.join(stage, 'main', name))
+        replace_file(os.path.join(data, name), os.path.join(stage, 'main', name))
 
     make_artwork.write(stage)
 

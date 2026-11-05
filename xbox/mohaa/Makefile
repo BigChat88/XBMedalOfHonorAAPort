@@ -229,7 +229,7 @@ NXDK_LINK_FLAGS := -include:_automount_d_drive -stack:1048576
 # Linker map for tools/addr2sym.py (crash addresses), rewritten on every link
 NXDK_LINK_FLAGS += -map:$(BUILD)/main.map
 
-XBE_TITLE := OGX MOHAA
+XBE_TITLE := MOHAA
 OUT := $(CURDIR)/bin
 
 .PHONY: link xbe
@@ -255,6 +255,7 @@ STAGE   := $(ISO_DIR)/work/stage
 .PHONY: iso folder stage
 stage: $(OUT)/default.xbe
 	@test -d $(STAGE)/main || { echo "No $(STAGE): run python tools/pack_iso.py first"; exit 1; }
+	@rm -f $(STAGE)/default.xbe $(STAGE)/main/autoexec.cfg $(STAGE)/main/xbox_default.cfg
 	@cp $(OUT)/default.xbe $(STAGE)/default.xbe
 	@cp $(CURDIR)/$(AUTOEXEC) $(STAGE)/main/autoexec.cfg
 	@cp $(CURDIR)/data/xbox_default.cfg $(STAGE)/main/xbox_default.cfg

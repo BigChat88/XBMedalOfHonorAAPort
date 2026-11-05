@@ -243,12 +243,24 @@ int pbgl_get_swap_interval(void) {
  * next frame needs the GPU. The game, cgame and the renderer's front end run
  * first and don't touch it, so the CPU gets that work done while the GPU
  * finishes, and most of the time there is nothing left to wait for. The GPU
- * is still idle whenever the push buffer and the vertex ring are rewound, and
- * the frame reaches the screen when it did before.
+ * is still idle whenever the push buffer and the vertex ring are rewound.
  *
- * Anything that writes memory the GPU reads has to call this first: draw calls
- * do it in pbgl_push_reserve, texture uploads and deletions in texture.c.
+ * Anything that writes memory the GPU reads has to call this first, and so does
+ * anything that draws: draw calls do it in pbgl_push_reserve, glClear on its own,
+ * texture uploads and deletions in texture.c.
+ *
+ * pbkit rotates through 3 buffers and asks for each flip in the push buffer, so
+ * the screen changes at the first vblank after the GPU gets there. With the GPU
+ * still working at the swap, a flip can miss the vblank the swap counted on, and
+ * the buffer rotated to may still be on screen: drawing there shows a frame being
+ * drawn (the sky alone, the world with no HUD, flickering from one to the other).
+ * So drawing waits here for it to leave the screen. By this point, after the game
+ * has run, it nearly always has: only frames quicker than the refresh have to wait.
  */
+#define PBGL_PCRTC_START (*(volatile GLuint *)0xFD600800)
+#define PBGL_FB_ADDR_MASK 0x03FFFFFF
+#define PBGL_FLIP_MAX_WAITS 8
+
 static GLboolean pbgl_sync_pending;
 
 void pbgl_frame_sync(void) {
@@ -258,7 +270,14 @@ void pbgl_frame_sync(void) {
 
   unsigned long long t0 = pbgl_perf_ticks();
   while (pb_busy());
-  pbgl_perf.gpuWait += pbgl_perf_ticks() - t0;
+  unsigned long long t1 = pbgl_perf_ticks();
+  pbgl_perf.gpuWait += t1 - t0;
+
+  // bounded: a flip that never comes must not hang the game
+  const GLuint target = (GLuint)pb_back_buffer() & PBGL_FB_ADDR_MASK;
+  for (int i = 0; i < PBGL_FLIP_MAX_WAITS && (PBGL_PCRTC_START & PBGL_FB_ADDR_MASK) == target; ++i)
+    pb_wait_for_vbl();
+  pbgl_perf.vblWait += pbgl_perf_ticks() - t1;
 
   // the GPU is idle: staged vertex data from the last frame can be overwritten
   pbgl_array_frame_reset();

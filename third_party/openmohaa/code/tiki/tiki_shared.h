@@ -250,6 +250,8 @@ typedef struct skelSurfaceGame_s {
     skelIndex_t              *pCollapse;
     struct skelSurfaceGame_s *pNext;
     skelIndex_t              *pCollapseIndex;
+    // OGX MOHAA: any of its vertices has morphs: heads have them, bodies don't
+    int                       xboxHasMorphs;
 
 #ifdef __cplusplus
     skelSurfaceGame_s();

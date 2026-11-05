@@ -1,10 +1,9 @@
 /*
  * con_xbox.c -- Xbox system console. Replaces sys/con_passive.c.
  *
- * Until the renderer takes over the screen, the engine log is printed with
- * nxdk's debugPrint. GLimp_Init calls Xbox_ConsoleRelease() before starting
- * pbgl. On a fatal error, Xbox_ConsoleShowError() takes the screen back and
- * shows the last log lines together with the error.
+ * The engine log is not shown on screen while the game starts: the screen stays
+ * black until the renderer takes it. On a fatal error, Xbox_ConsoleShowError()
+ * takes the screen back and shows the last log lines together with the error.
  *
  * Every line also goes to COM1 of the SuperIO chip (0x3F8). xemu can write
  * that port to a file on the host:
@@ -116,7 +115,7 @@ void CON_Init(void)
     Serial_Write("---- OGX MOHAA serial log ----\n");
     XVideoSetMode(640, 480, 32, REFRESH_DEFAULT);
     debugClearScreen();
-    onScreen = qtrue;
+    onScreen = qfalse;
 }
 
 void CON_Shutdown(void) {}

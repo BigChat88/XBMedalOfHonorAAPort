@@ -163,6 +163,12 @@ instead of using the single glDrawElements call that may be inefficient
 without compiled vertex arrays.
 ==================
 */
+#ifdef NXDK
+// OGX MOHAA: pbgl's. Every index of a batch is among the vertices of tess, which spares
+// looking for the ones to send to the GPU in the indices of each draw.
+void glDrawRangeElements( GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const void *indices );
+#endif
+
 static void R_DrawElements( int numIndexes, const glIndex_t *indexes ) {
 	int		primitives;
 
@@ -179,6 +185,10 @@ static void R_DrawElements( int numIndexes, const glIndex_t *indexes ) {
 
 
 	if ( primitives == 2 ) {
+#ifdef NXDK
+		glDrawRangeElements( GL_TRIANGLES, 0, tess.numVertexes - 1, numIndexes, GL_INDEX_TYPE, indexes );
+		return;
+#endif
 		qglDrawElements( GL_TRIANGLES, 
 						numIndexes,
 						GL_INDEX_TYPE,
@@ -1633,6 +1643,9 @@ void RB_StageIteratorVertexLitTextureUnfogged( void )
 {
 	shaderCommands_t *input;
 	shader_t		*shader;
+#ifdef NXDK
+	const byte		*gridColor = NULL;
+#endif
 
 	input = &tess;
 
@@ -1658,6 +1671,13 @@ void RB_StageIteratorVertexLitTextureUnfogged( void )
 		// calculate using previously calculated lighting grid
 		// for the entity
 		//
+#ifdef NXDK
+		// OGX MOHAA: it's one color: no need to write it for each vertex, and for the
+		// GPU to read it from there
+		if (backEnd.currentEntity && backEnd.currentEntity != &tr.worldEntity) {
+			gridColor = (const byte *)&backEnd.currentEntity->iGridLighting;
+		} else
+#endif
 		RB_CalcLightGridColor((unsigned char*)tess.svars.colors);
 	}
 
@@ -1679,10 +1699,18 @@ void RB_StageIteratorVertexLitTextureUnfogged( void )
 	//
 	// set arrays and lock
 	//
+#ifdef NXDK
+	if (gridColor) {
+		qglDisableClientState( GL_COLOR_ARRAY );
+		qglColor4ubv( gridColor );
+	} else
+#endif
+	{
 	qglEnableClientState( GL_COLOR_ARRAY);
+	qglColorPointer( 4, GL_UNSIGNED_BYTE, 0, tess.svars.colors );
+	}
 	qglEnableClientState( GL_TEXTURE_COORD_ARRAY);
 
-	qglColorPointer( 4, GL_UNSIGNED_BYTE, 0, tess.svars.colors );
 	qglTexCoordPointer( 2, GL_FLOAT, 16, tess.texCoords[0][0] );
 	qglVertexPointer (3, GL_FLOAT, 16, input->xyz);
 
@@ -1698,6 +1726,12 @@ void RB_StageIteratorVertexLitTextureUnfogged( void )
 	R_BindAnimatedImage( &tess.xstages[0]->bundle[0] );
 	GL_State( tess.xstages[0]->stateBits );
 	R_DrawElements( input->numIndexes, input->indexes );
+
+#ifdef NXDK
+	if (gridColor) {
+		qglEnableClientState( GL_COLOR_ARRAY );
+	}
+#endif
 
 	// 
 	// now do any dynamic lighting needed

@@ -13,6 +13,8 @@
 
 GL_API void glClear(GLbitfield mask) {
   PBGL_TRACE("clear 0x%x\n", mask);
+  // OGX MOHAA: it draws, usually first of all in a frame
+  pbgl_frame_sync();
   GLuint nvmask = 0;
   if (mask & GL_COLOR_BUFFER_BIT)   nvmask |= NV097_CLEAR_SURFACE_COLOR;
   if (mask & GL_DEPTH_BUFFER_BIT)   nvmask |= NV097_CLEAR_SURFACE_Z;

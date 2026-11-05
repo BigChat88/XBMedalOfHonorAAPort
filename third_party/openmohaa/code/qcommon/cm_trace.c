@@ -793,6 +793,17 @@ void CM_TraceToLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
 			continue;
 		}
 
+#ifdef NXDK
+		// OGX MOHAA: a brush the trace's box doesn't reach can't stop it, and the
+		// test is much cheaper than comparing the trace against all its sides
+		if( !sphere.use
+			&& ( tw->bounds[ 0 ][ 0 ] > b->bounds[ 1 ][ 0 ] + 1 || tw->bounds[ 1 ][ 0 ] < b->bounds[ 0 ][ 0 ] - 1
+				|| tw->bounds[ 0 ][ 1 ] > b->bounds[ 1 ][ 1 ] + 1 || tw->bounds[ 1 ][ 1 ] < b->bounds[ 0 ][ 1 ] - 1
+				|| tw->bounds[ 0 ][ 2 ] > b->bounds[ 1 ][ 2 ] + 1 || tw->bounds[ 1 ][ 2 ] < b->bounds[ 0 ][ 2 ] - 1 ) ) {
+			continue;
+		}
+#endif
+
 		CM_TraceThroughBrush( tw, b );
 		if( !tw->trace.fraction ) {
 			return;
@@ -1789,6 +1800,16 @@ qboolean CM_SightTraceToLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
 		if( !( b->contents & tw->contents ) ) {
 			continue;
 		}
+
+#ifdef NXDK
+		// OGX MOHAA: see CM_TraceToLeaf
+		if( !sphere.use
+			&& ( tw->bounds[ 0 ][ 0 ] > b->bounds[ 1 ][ 0 ] + 1 || tw->bounds[ 1 ][ 0 ] < b->bounds[ 0 ][ 0 ] - 1
+				|| tw->bounds[ 0 ][ 1 ] > b->bounds[ 1 ][ 1 ] + 1 || tw->bounds[ 1 ][ 1 ] < b->bounds[ 0 ][ 1 ] - 1
+				|| tw->bounds[ 0 ][ 2 ] > b->bounds[ 1 ][ 2 ] + 1 || tw->bounds[ 1 ][ 2 ] < b->bounds[ 0 ][ 2 ] - 1 ) ) {
+			continue;
+		}
+#endif
 
 		if( !CM_SightTraceThroughBrush( tw, b ) ) {
 			return qfalse;

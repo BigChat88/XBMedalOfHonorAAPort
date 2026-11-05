@@ -160,6 +160,16 @@ Skeletal model cull (2026-11-04): upstream's `R_AddSkelSurfaces` only counted it
 
 GPU wait moved (2026-11-04): `pbgl_swap_buffers` no longer waits for the GPU; `pbgl_frame_sync` does it before the next frame's first draw, texture change or read, so the game and cgame run while the GPU finishes. No added latency. Alternating runs, 2 each: 35.8 -> 34.0 ms, gpu wait 1.7 -> 0.2 ms.
 
+Flicker from that change (2026-11-05): with the GPU still working at the swap, a flip can miss the vblank the swap counted on, and pbkit's rotation through 3 buffers then lands on the buffer still on screen. Frames quicker than the refresh showed while being drawn: in m1l2a looking at the sky, 14 of 40 captures had no HUD, some only the sky. `pbgl_frame_sync` now waits for the buffer it will draw to to leave the screen (it reads `PCRTC_START`), and `glClear` syncs too. Same view: 0 of 60, at 60 fps. In the truck scene the wait is about 0 ms; a first version of the fix waited in the swap and cost up to 8 ms per frame.
+
+CPU batch (2026-11-05): binary search for animation key frames (they are dense and in order: `Compress` returns false), box rejects before brush and patch traces, plane tests worked out when needed in point traces through patches, box reject for grid cells in marks, SSE `myGlMultMatrix` and `memcpy`, non temporal copy into the vertex ring, one copy for the two sets of texture coordinates, 16 bit indices in the push buffer, `glDrawRangeElements` instead of scanning indices, one color for grid-lit models, a plain skinning loop for surfaces without morphs. Alternating runs, 2 each: 27.0 -> 24.6 ms; with the flicker fix, 25.1 and 25.8 ms against 27.5 and 32.2 ms (that one with the host busy). In the profile, collision went from 9.3% to 4.6%, and memory and string functions from 5.4% to 1.7%. Now skinning is 23%, the renderer's front end 11.9%, pbgl 10.9%, bones 10.8%. Not measured on a console.
+
+Alignment (2026-11-05): `Q_ALIGN` is empty with nxdk's compiler (`q_shared.h` defines it only for `__GNUC__`), and `TIKI_Skel_Bones` declared no alignment, so the SSE code worked by luck until a layout change moved `tess` to 12 bytes past a multiple of 16 and a `movaps` crashed. `tr_local.h` now defines `Q_ALIGN` for the renderer, `tr_model.cpp` checks it at compile time, and the bone table is declared aligned.
+
+Level change crash (2026-11-05): going from m1l1 to m1l2a stopped with "Z_Free: freed a pointer without ZONEID". `Skeletor_XboxPackAnim` puts all the channels of an animation in one block, and a position channel starts with its scale: when the first channel was one, `DeallocAnimData` freed the block 4 bytes past its start. It only shows when the animation cache is emptied, at the first level change. Reproduced and checked in xemu with `gamemap m1l2a` after loading m1l1; `Z_Free`'s error now gives the caller's address.
+
+Reading a crash in xemu: the serial log fills with a 973 byte block repeating without end that starts with `0000`, a kernel debugger state change (the normal block at boot starts the same way, so go by the log's size). From its start: +0x28 EIP, +0x30 exception code, +0xDC the instructions at EIP, +0x194 the registers from Edi on. Look EIP up in `build/main.map`.
+
 Marks (2026-11-05): temporary marks are rebuilt every frame; triangles entirely behind a bounding plane are now dropped before the normal test, which no longer needs a square root. Same result. In the profile, marks plus `VectorNormalize` went from 4.3% to under 2% of the CPU; the timed runs were too noisy to show it in the total.
 
 Boot (2026-11-05): listing the paks' directories took a seek and several small reads per file. A 256 KB read window during `FS_LoadZipFile` (`qcommon/ioapi.c`) took the time until "Current search path" from 12.3 s to 7.8 s, and the whole boot in xemu from 18.0 s to 13.2 s (one run each). About 6 s of it comes before the game's first log line.
@@ -170,6 +180,6 @@ xemu's speed depends heavily on the host: the same binary gave 35.8 and 47 ms on
 
 Tried and removed (2026-11-04), measured gain none: real `glLockArrays` (only 3-4 of ~170 position copies per frame could be reused, nearly everything is one pass) and `-O3` on the hottest files (48.0 ms with it, 47.1 ms without). Same binary, same day, earlier runs varied 48-57 ms: compare builds only with alternating runs.
 
-`xbox_perf 2` (`mohaa-perf.iso`) draws the frame times on screen, to read them on a console.
+`xbox_perf 2` (`mohaa-perf.iso`) draws the frame times on screen, to read them on a console. Its panel covers the top right of the picture (about 300 x 80 of the 640 x 480), so compare scenes without it. xemu's menu bar, which appears when the mouse moves, covers the top 10 rows.
 
 GPU skinning dropped for now: ~29,000 vertices per frame, an estimated gain of ~10 ms in exchange for duplicating meshes in memory and rewriting fog, textures and lighting in vertex shaders.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Rewrites the game's menus for the console, from the player's own paks.
 
-    main.urc              no Multiplayer
+    main.urc              no Multiplayer, no Quit (a console game has nowhere to quit to)
     options_main.urc      no Video
     advancedoptions.urc   what makes no sense on a console is shown dimmed and inert
     audio options.urc     the same
@@ -108,7 +108,8 @@ def controls(text):
 def build(read):
     """read(name) gives the text of ui/<name>; returns {file name: text}."""
     head, res = split(read('main.urc'))
-    menus = {'main.urc': join(head, [r for r in res if 'pushmenu multiplayer' not in r])}
+    menus = {'main.urc': join(head, [r for r in res
+                                      if 'pushmenu multiplayer' not in r and 'stuffcommand "quit"' not in r])}
 
     head, res = split(read('options_main.urc'))
     menus['options_main.urc'] = join(

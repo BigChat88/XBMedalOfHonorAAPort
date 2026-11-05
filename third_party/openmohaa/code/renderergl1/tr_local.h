@@ -1907,6 +1907,14 @@ typedef struct stageVars
 	vec2_t		texcoords[NUM_TEXTURE_BUNDLES][SHADER_MAX_VERTEXES];
 } stageVars_t;
 
+#ifdef NXDK
+// OGX MOHAA: q_shared.h only defines Q_ALIGN for __GNUC__, which nxdk's compiler isn't.
+// Without it tess falls anywhere (it was 12 bytes past a multiple of 16), and on the
+// Pentium III every 16 byte access to its arrays is slower, or crosses a cache line.
+#undef Q_ALIGN
+#define Q_ALIGN(x) __attribute__((aligned(x)))
+#endif
+
 typedef struct shaderCommands_s 
 {
 	glIndex_t	indexes[SHADER_MAX_INDEXES] Q_ALIGN(16);
